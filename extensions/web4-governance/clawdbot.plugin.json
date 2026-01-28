@@ -1,0 +1,22 @@
+{
+  "id": "web4-governance",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "auditLevel": {
+        "type": "string",
+        "enum": ["minimal", "standard", "verbose"],
+        "default": "standard"
+      },
+      "showR6Status": {
+        "type": "boolean",
+        "default": true
+      },
+      "storagePath": {
+        "type": "string",
+        "description": "Override default ~/.web4/ storage path"
+      }
+    }
+  }
+}
