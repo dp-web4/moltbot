@@ -1,0 +1,23 @@
+{
+  "id": "web4-governance",
+  "channels": [],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "auditLevel": {
+        "type": "string",
+        "enum": ["minimal", "standard", "verbose"],
+        "default": "standard"
+      },
+      "showR6Status": {
+        "type": "boolean",
+        "default": true
+      },
+      "actionBudget": {
+        "type": ["number", "null"],
+        "default": null
+      }
+    }
+  }
+}
