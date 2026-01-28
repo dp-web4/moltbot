@@ -293,6 +293,7 @@ const plugin = {
     });
 
     // --- CLI Commands ---
+    /* eslint-disable no-console */
 
     api.registerCli(
       ({ program }) => {
