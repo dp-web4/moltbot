@@ -303,7 +303,7 @@ const plugin = {
           .command("summary")
           .description("Show session audit summary")
           .action(() => {
-            for (const [sid, entry] of sessions) {
+            for (const [, entry] of sessions) {
               const v = entry.audit.verify();
               console.log(`Session: ${entry.state.lct.tokenId}`);
               console.log(`  Actions: ${entry.state.actionIndex}`);
