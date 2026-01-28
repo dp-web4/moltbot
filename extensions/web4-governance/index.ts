@@ -418,6 +418,7 @@ const plugin = {
     );
 
     // --- Policy Admin CLI ---
+    /* eslint-disable no-console */
 
     api.registerCli(
       ({ program }) => {
