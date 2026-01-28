@@ -284,6 +284,73 @@ const plugin = {
       { commands: ["audit"] },
     );
 
+    // --- Policy Admin CLI ---
+
+    api.registerCli(
+      ({ program }) => {
+        const policy = program.command("policy").description("Web4 policy engine administration");
+
+        policy
+          .command("status")
+          .description("Show policy engine status")
+          .action(() => {
+            console.log(`Policy engine:`);
+            console.log(`  Rules:    ${policyEngine.ruleCount}`);
+            console.log(`  Default:  ${policyEngine.defaultDecision}`);
+            console.log(`  Enforce:  ${policyEngine.isEnforcing}`);
+          });
+
+        policy
+          .command("rules")
+          .description("List all policy rules in evaluation order")
+          .action(() => {
+            const rules = policyEngine.sortedRules;
+            if (rules.length === 0) {
+              console.log("No policy rules configured.");
+              return;
+            }
+            console.log(`${rules.length} rules (priority order):\n`);
+            for (const rule of rules) {
+              const match = rule.match;
+              const criteria: string[] = [];
+              if (match.tools) criteria.push(`tools=[${match.tools.join(", ")}]`);
+              if (match.categories) criteria.push(`categories=[${match.categories.join(", ")}]`);
+              if (match.targetPatterns) {
+                const kind = match.targetPatternsAreRegex ? "regex" : "glob";
+                criteria.push(`targets(${kind})=[${match.targetPatterns.join(", ")}]`);
+              }
+              console.log(`  [${rule.priority}] ${rule.id} → ${rule.decision}`);
+              console.log(`       ${rule.name}`);
+              if (criteria.length > 0) console.log(`       match: ${criteria.join(" AND ")}`);
+              if (rule.reason) console.log(`       reason: ${rule.reason}`);
+              console.log();
+            }
+            console.log(`Default: ${policyEngine.defaultDecision} | Enforce: ${policyEngine.isEnforcing}`);
+          });
+
+        policy
+          .command("test")
+          .description("Dry-run a tool call against the policy engine")
+          .argument("<toolName>", "Tool name (e.g. Bash, Read, WebFetch)")
+          .argument("[target]", "Target string (e.g. command, file path, URL)")
+          .action((toolName: string, target?: string) => {
+            const category = classifyTool(toolName);
+            const evaluation = policyEngine.evaluate(toolName, category, target);
+            console.log(`Tool:       ${toolName}`);
+            console.log(`Category:   ${category}`);
+            console.log(`Target:     ${target ?? "(none)"}`);
+            console.log(`Decision:   ${evaluation.decision}`);
+            console.log(`Enforced:   ${evaluation.enforced}`);
+            console.log(`Reason:     ${evaluation.reason}`);
+            if (evaluation.matchedRule) {
+              console.log(`Rule:       ${evaluation.matchedRule.id} (priority ${evaluation.matchedRule.priority})`);
+            }
+            console.log(`Constraints: ${evaluation.constraints.join(", ")}`);
+          });
+      },
+      { commands: ["policy"] },
+    );
+
     logger.info(`[web4] Web4 Governance plugin loaded (audit: ${auditLevel})`);
   },
 };

@@ -81,4 +81,13 @@ export class PolicyEngine {
   get isEnforcing(): boolean {
     return this.enforce;
   }
+
+  get defaultDecision(): PolicyDecision {
+    return this.defaultPolicy;
+  }
+
+  /** Get all rules in evaluation order (priority ascending). */
+  get sortedRules(): readonly PolicyRule[] {
+    return this.rules;
+  }
 }
