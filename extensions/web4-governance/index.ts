@@ -44,7 +44,7 @@ const plugin = {
 
   register(api: MoltbotPluginApi) {
     const config = (api.pluginConfig ?? {}) as PluginConfig;
-    const storagePath = config.storagePath ?? join(homedir(), ".web4");
+    const storagePath = config.storagePath ?? join(homedir(), ".moltbot", "extensions", "web4-governance");
     const auditLevel = config.auditLevel ?? "standard";
     const logger = api.logger;
 
