@@ -20,12 +20,33 @@ import { RateLimiter } from "./src/rate-limiter.js";
 import { AuditReporter } from "./src/reporter.js";
 import { SessionStore, type SessionState } from "./src/session-state.js";
 import { createSoftLCT } from "./src/soft-lct.js";
+import {
+  PolicyModel,
+  createHeuristicOnlyPolicyModel,
+  createR6ModelRequest,
+} from "./src/policy-model.js";
+import type { PolicyModelDecision, PolicyModelReview } from "./src/policy-model-types.js";
+
+type PolicyModelConfig = {
+  /** Path to GGUF model file (e.g., phi-4-mini-Q4_K_M.gguf) */
+  modelPath?: string;
+  /** Path to store policy embeddings */
+  embeddingsPath?: string;
+  /** Enable policy model (default: true if modelPath provided) */
+  enabled?: boolean;
+  /** Max inference time in ms (default: 2000) */
+  maxInferenceMs?: number;
+  /** Use GPU acceleration (default: false) */
+  useGpu?: boolean;
+};
 
 type PluginConfig = {
   auditLevel?: string;
   showR6Status?: boolean;
   storagePath?: string;
   policy?: Partial<PolicyConfig> & { preset?: string };
+  /** Policy Model configuration for semantic policy evaluation */
+  policyModel?: PolicyModelConfig;
 };
 
 const plugin = {
@@ -80,6 +101,45 @@ const plugin = {
       logger.info(
         `[web4] Policy engine: ${policyEngine.ruleCount} rules, enforce=${policyEngine.isEnforcing}`,
       );
+    }
+
+    // Policy Model - semantic policy evaluation using local LLM
+    let policyModel: PolicyModel | null = null;
+    const policyModelStash = new Map<string, PolicyModelDecision>();
+
+    if (config.policyModel?.modelPath || config.policyModel?.enabled === false) {
+      const modelConfig = config.policyModel;
+      if (modelConfig.enabled !== false && modelConfig.modelPath) {
+        policyModel = new PolicyModel(
+          {
+            modelPath: modelConfig.modelPath,
+            policyEmbeddingsPath: modelConfig.embeddingsPath ?? join(storagePath, "embeddings"),
+            maxInferenceMs: modelConfig.maxInferenceMs ?? 2000,
+            enabled: true,
+            gpuLayers: modelConfig.useGpu ? 99 : 0,
+          },
+          `policy-model:${randomUUID()}`,
+        );
+
+        // Initialize asynchronously
+        policyModel
+          .init(policyEngine)
+          .then(() => {
+            const status = policyModel!.getStatus();
+            logger.info(
+              `[web4] Policy Model initialized: model=${status.modelReady ? "ready" : "heuristic-only"}, embeddings=${status.embeddingCount}`,
+            );
+          })
+          .catch((err) => {
+            logger.warn(`[web4] Policy Model init failed: ${err.message}`);
+            policyModel = null;
+          });
+      } else if (modelConfig.enabled === false) {
+        // Heuristic-only mode explicitly requested
+        policyModel = createHeuristicOnlyPolicyModel();
+        policyModel.init(policyEngine).catch(() => {});
+        logger.info("[web4] Policy Model: heuristic-only mode");
+      }
     }
 
     // Stash for passing policy evaluations from before_tool_call to after_tool_call
@@ -217,7 +277,7 @@ const plugin = {
     // --- Typed Tool Hooks (wired via pi-tools.hooks.ts) ---
 
     // Pre-action policy gating
-    api.on("before_tool_call", (event, ctx) => {
+    api.on("before_tool_call", async (event, ctx) => {
       const sid = deriveSessionKey(ctx);
       const category = classifyTool(event.toolName);
       const target = extractTarget(event.toolName, event.params);
@@ -225,58 +285,123 @@ const plugin = {
       // Ensure session exists for this tool call (P0 fix: consistent key derivation)
       const entry = getOrCreateSession(sid);
 
-      if (policyEngine.ruleCount === 0) {
-        return;
-      }
+      // --- Phase 1: Heuristic Policy Evaluation ---
+      if (policyEngine.ruleCount > 0) {
+        const { blocked, evaluation } = policyEngine.shouldBlock(event.toolName, category, target);
 
-      const { blocked, evaluation } = policyEngine.shouldBlock(event.toolName, category, target);
+        // Stash evaluation for after_tool_call to pick up
+        policyStash.set(sid, evaluation);
 
-      // Stash evaluation for after_tool_call to pick up
-      policyStash.set(sid, evaluation);
-
-      if (evaluation.decision === "warn") {
-        logger.warn(
-          `[web4] Policy WARN: ${event.toolName} [${category}] → ${target ?? "(no target)"} — ${evaluation.reason}`,
-        );
-      }
-
-      if (blocked) {
-        logger.warn(
-          `[web4] Policy DENY: ${event.toolName} [${category}] → ${target ?? "(no target)"} — ${evaluation.reason}`,
-        );
-
-        // P2 fix: Audit blocked calls (after_tool_call won't fire for blocked tools)
-        const r6 = createR6Request(
-          entry.state.sessionId,
-          ctx.agentId,
-          event.toolName,
-          event.params,
-          entry.state.actionIndex,
-          entry.state.lastR6Id,
-          auditLevel,
-          entry.state.policyEntityId,
-        );
-        r6.rules.constraints = evaluation.constraints;
-        const result = {
-          status: "blocked" as const,
-          errorMessage: evaluation.reason,
-        };
-        r6.result = result;
-        entry.audit.record(r6, result);
-        sessionStore.incrementAction(entry.state, event.toolName, category, r6.id);
-
-        if (auditLevel === "verbose") {
-          logger.info(`[web4] R6 ${r6.id}: ${event.toolName} [${category}] → BLOCKED`);
+        if (evaluation.decision === "warn") {
+          logger.warn(
+            `[web4] Policy WARN: ${event.toolName} [${category}] → ${target ?? "(no target)"} — ${evaluation.reason}`,
+          );
         }
 
-        return { block: true, blockReason: `[web4-policy] ${evaluation.reason}` };
+        if (blocked) {
+          logger.warn(
+            `[web4] Policy DENY: ${event.toolName} [${category}] → ${target ?? "(no target)"} — ${evaluation.reason}`,
+          );
+
+          // P2 fix: Audit blocked calls (after_tool_call won't fire for blocked tools)
+          const r6 = createR6Request(
+            entry.state.sessionId,
+            ctx.agentId,
+            event.toolName,
+            event.params,
+            entry.state.actionIndex,
+            entry.state.lastR6Id,
+            auditLevel,
+            entry.state.policyEntityId,
+          );
+          r6.rules.constraints = evaluation.constraints;
+          const result = {
+            status: "blocked" as const,
+            errorMessage: evaluation.reason,
+          };
+          r6.result = result;
+          entry.audit.record(r6, result);
+          sessionStore.incrementAction(entry.state, event.toolName, category, r6.id);
+
+          if (auditLevel === "verbose") {
+            logger.info(`[web4] R6 ${r6.id}: ${event.toolName} [${category}] → BLOCKED (heuristic)`);
+          }
+
+          return { block: true, blockReason: `[web4-policy] ${evaluation.reason}` };
+        }
+
+        if (evaluation.decision === "deny" && !evaluation.enforced) {
+          // Dry-run mode: log but don't block
+          logger.warn(
+            `[web4] Policy DENY (dry-run): ${event.toolName} [${category}] → ${target ?? "(no target)"} — ${evaluation.reason}`,
+          );
+        }
       }
 
-      if (evaluation.decision === "deny" && !evaluation.enforced) {
-        // Dry-run mode: log but don't block
-        logger.warn(
-          `[web4] Policy DENY (dry-run): ${event.toolName} [${category}] → ${target ?? "(no target)"} — ${evaluation.reason}`,
-        );
+      // --- Phase 2: Policy Model Semantic Evaluation (heterogeneous review) ---
+      if (policyModel) {
+        try {
+          const r6ModelRequest = createR6ModelRequest(
+            entry.state.sessionId,
+            event.toolName,
+            target ?? "(no target)",
+            event.params as Record<string, unknown>,
+            {
+              type: category === "network" ? "network_operation" : category === "filesystem" ? "file_operation" : "tool_call",
+            },
+          );
+
+          const modelDecision = await policyModel.evaluatePreToolUse(r6ModelRequest);
+
+          // Stash for after_tool_call
+          policyModelStash.set(sid, modelDecision);
+
+          if (modelDecision.decision === "deny" && modelDecision.confidence > 0.7) {
+            logger.warn(
+              `[web4] Policy Model DENY: ${event.toolName} → ${target ?? "(no target)"} — ${modelDecision.reasoning} (confidence: ${modelDecision.confidence.toFixed(2)}, source: ${modelDecision.source})`,
+            );
+
+            if (policyEngine.isEnforcing) {
+              // Record in audit
+              const r6 = createR6Request(
+                entry.state.sessionId,
+                ctx.agentId,
+                event.toolName,
+                event.params,
+                entry.state.actionIndex,
+                entry.state.lastR6Id,
+                auditLevel,
+                entry.state.policyEntityId,
+              );
+              const result = {
+                status: "blocked" as const,
+                errorMessage: `[policy-model] ${modelDecision.reasoning}`,
+              };
+              r6.result = result;
+              entry.audit.record(r6, result);
+              sessionStore.incrementAction(entry.state, event.toolName, category, r6.id);
+
+              return { block: true, blockReason: `[web4-policy-model] ${modelDecision.reasoning}` };
+            }
+          }
+
+          if (modelDecision.decision === "require_attestation") {
+            logger.info(
+              `[web4] Policy Model: attestation required for ${event.toolName} — ${modelDecision.reasoning}`,
+            );
+          }
+
+          if (auditLevel === "verbose" && modelDecision.source === "model") {
+            logger.info(
+              `[web4] Policy Model: ${modelDecision.decision} for ${event.toolName} (${modelDecision.processingMs}ms, confidence: ${modelDecision.confidence.toFixed(2)})`,
+            );
+          }
+        } catch (err) {
+          // Policy model errors should not block - fall back to heuristics
+          if (auditLevel === "verbose") {
+            logger.warn(`[web4] Policy Model error: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
       }
     });
 
@@ -614,11 +739,114 @@ const plugin = {
               logger.info("---");
             }
           });
+
+        // --- Policy Model CLI ---
+        policy
+          .command("model")
+          .description("Show policy model status (semantic policy evaluation)")
+          .action(async () => {
+            if (!policyModel) {
+              logger.info("Policy Model: not configured");
+              logger.info("");
+              logger.info("To enable, add to config:");
+              logger.info('  "policyModel": {');
+              logger.info('    "modelPath": "/path/to/phi-4-mini-Q4_K_M.gguf"');
+              logger.info("  }");
+              return;
+            }
+
+            const status = policyModel.getStatus();
+            const metrics = policyModel.getInferenceMetrics();
+            const attestation = policyModel.getLastAttestation();
+
+            logger.info("Policy Model Status:");
+            logger.info(`  Initialized:    ${status.initialized}`);
+            logger.info(`  Model Ready:    ${status.modelReady}`);
+            logger.info(`  Embedding Count: ${status.embeddingCount}`);
+            logger.info(`  Heuristic Rules: ${status.heuristicRuleCount}`);
+            logger.info("---");
+            logger.info("Inference Metrics:");
+            logger.info(`  Pre-tool avg:   ${metrics.preToolMs}ms`);
+            logger.info(`  Post-tool avg:  ${metrics.postToolMs}ms`);
+            logger.info(`  Total tokens:   ${metrics.totalTokens}`);
+            if (attestation) {
+              logger.info("---");
+              logger.info("Last Attestation:");
+              logger.info(`  Model Hash:     ${attestation.modelHash.slice(0, 16)}...`);
+              logger.info(`  Policy Hash:    ${attestation.policyHash.slice(0, 16)}...`);
+              logger.info(`  Attested At:    ${attestation.attestedAt.toISOString()}`);
+              logger.info(`  Binding Type:   ${attestation.bindingType}`);
+            }
+          });
+
+        policy
+          .command("model-test")
+          .description("Test policy model evaluation on a tool call")
+          .argument("<toolName>", "Tool name (e.g. Bash, Read, WebFetch)")
+          .argument("[target]", "Target string (e.g. command, file path, URL)")
+          .action(async (toolName: string, target?: string) => {
+            if (!policyModel) {
+              logger.info("Policy Model not configured. Use heuristic policy test instead.");
+              return;
+            }
+
+            const category = classifyTool(toolName);
+            const r6Request = createR6ModelRequest(
+              "test-session",
+              toolName,
+              target ?? "(no target)",
+              {},
+              {
+                type: category === "network" ? "network_operation" : category === "filesystem" ? "file_operation" : "tool_call",
+              },
+            );
+
+            logger.info(`Testing: ${toolName} → ${target ?? "(no target)"}`);
+            logger.info("---");
+
+            try {
+              const decision = await policyModel.evaluatePreToolUse(r6Request);
+              logger.info(`Decision:    ${decision.decision}`);
+              logger.info(`Confidence:  ${decision.confidence.toFixed(2)}`);
+              logger.info(`Source:      ${decision.source}`);
+              logger.info(`Reasoning:   ${decision.reasoning}`);
+              logger.info(`References:  ${decision.policyReferences.join(", ") || "(none)"}`);
+              logger.info(`Processing:  ${decision.processingMs}ms`);
+            } catch (err) {
+              logger.info(`Error: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          });
+
+        policy
+          .command("model-attest")
+          .description("Generate a fresh attestation of policy model state")
+          .action(async () => {
+            if (!policyModel) {
+              logger.info("Policy Model not configured.");
+              return;
+            }
+
+            try {
+              const attestation = await policyModel.attestPolicyState();
+              logger.info("Policy Model Attestation:");
+              logger.info(`  Model Hash:      ${attestation.modelHash}`);
+              logger.info(`  Policy Hash:     ${attestation.policyHash}`);
+              logger.info(`  Actor ID:        ${attestation.actorId}`);
+              logger.info(`  Binding Type:    ${attestation.bindingType}`);
+              logger.info(`  Model Version:   ${attestation.modelVersion}`);
+              logger.info(`  Active Policies: ${attestation.activePolicyCount}`);
+              logger.info(`  Attested At:     ${attestation.attestedAt.toISOString()}`);
+              logger.info(`  Signature:       ${attestation.signature.slice(0, 32)}...`);
+            } catch (err) {
+              logger.info(`Error: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          });
       },
       { commands: ["policy"] },
     );
 
-    logger.info(`[web4] Web4 Governance plugin loaded (audit: ${auditLevel})`);
+    const modelStatus = policyModel ? (policyModel.isModelReady() ? "ready" : "heuristic") : "none";
+    logger.info(`[web4] Web4 Governance plugin loaded (audit: ${auditLevel}, model: ${modelStatus})`);
   },
 };
 

@@ -225,7 +225,7 @@
   },
   "peerDependencies": {
     "@napi-rs/canvas": "^0.1.89",
-    "node-llama-cpp": "3.15.1"
+    "node-llama-cpp": "^3.15.1"
   },
   "overrides": {
     "tar": "7.5.7"
