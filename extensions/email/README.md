@@ -23,16 +23,16 @@ Add to `~/.openclaw/moltbot.json`:
         "config": {
           "accounts": [
             {
-              "id": "4-tron",
-              "email": "${FOURTRON_EMAIL}",
-              "password": "${FOURTRON_PASSWORD}",
+              "id": "my-agent",
+              "email": "${AGENT_EMAIL}",
+              "password": "${AGENT_PASSWORD}",
               "imap": {
-                "host": "imap.gmail.com",
+                "host": "mail.example.com",
                 "port": 993,
                 "secure": true
               },
               "smtp": {
-                "host": "smtp.gmail.com",
+                "host": "mail.example.com",
                 "port": 587,
                 "secure": false
               },
@@ -53,8 +53,8 @@ Add to `~/.openclaw/moltbot.json`:
 Store credentials in your `.env` file (never in config):
 
 ```bash
-FOURTRON_EMAIL=4-tron@dpcars.net
-FOURTRON_PASSWORD=your-app-password
+AGENT_EMAIL=agent@example.com
+AGENT_PASSWORD=your-app-password
 ```
 
 ## Gmail Setup
@@ -84,8 +84,8 @@ openclaw email check
 Agents can send emails using the channel API:
 
 ```typescript
-await agent.channels.send("email", "4-tron", "recipient@example.com", {
-  text: "Hello from 4-Tron!",
+await agent.channels.send("email", "my-agent", "recipient@example.com", {
+  text: "Hello from my agent!",
   metadata: {
     subject: "Greetings",
   },
