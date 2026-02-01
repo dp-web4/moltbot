@@ -542,7 +542,7 @@ const plugin = {
               if (rule.reason) {
                 logger.info(`       reason: ${rule.reason}`);
               }
-              logger.info();
+              logger.info("---");
             }
             logger.info(
               `Default: ${policyEngine.defaultDecision} | Enforce: ${policyEngine.isEnforcing}`,
@@ -585,7 +585,7 @@ const plugin = {
               logger.info(
                 `    default: ${p.config.defaultPolicy} | enforce: ${p.config.enforce} | rules: ${ruleCount}`,
               );
-              logger.info();
+              logger.info("---");
             }
             logger.info(`Usage: { "policy": { "preset": "<name>" } }`);
           });
@@ -611,7 +611,7 @@ const plugin = {
               logger.info(
                 `    witnessed by: ${witnessedBy.length} | has witnessed: ${hasWitnessed.length}`,
               );
-              logger.info();
+              logger.info("---");
             }
           });
       },
