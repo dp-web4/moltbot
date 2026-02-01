@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { wrapToolWithHooks, type ToolHookContext } from "./pi-tools.hooks.js";
 import type { AnyAgentTool } from "./pi-tools.types.js";
+import { wrapToolWithHooks, type ToolHookContext } from "./pi-tools.hooks.js";
 
 // Mock the global hook runner
 const mockRunBeforeToolCall = vi.fn();

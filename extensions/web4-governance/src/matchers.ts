@@ -5,8 +5,8 @@
  * against policy rule criteria.
  */
 
-import type { ToolCategory } from "./r6.js";
 import type { PolicyMatch } from "./policy-types.js";
+import type { ToolCategory } from "./r6.js";
 
 /**
  * Convert a glob pattern to a regex.

@@ -20,8 +20,8 @@ import type {
   PolicyEvaluation,
 } from "./policy-types.js";
 import type { ToolCategory } from "./r6.js";
-import { resolvePreset } from "./presets.js";
 import type { RateLimiter } from "./rate-limiter.js";
+import { resolvePreset } from "./presets.js";
 
 export type PolicyEntityId = `policy:${string}:${string}:${string}`;
 

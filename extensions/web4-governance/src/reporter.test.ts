@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AuditReporter } from "./reporter.js";
 import type { AuditRecord } from "./audit.js";
+import { AuditReporter } from "./reporter.js";
 
 function makeRecord(overrides: Partial<AuditRecord> = {}): AuditRecord {
   return {

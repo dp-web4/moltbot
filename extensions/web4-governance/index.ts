@@ -7,19 +7,19 @@
  */
 
 import type { MoltbotPluginApi } from "clawdbot/plugin-sdk";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { createSoftLCT } from "./src/soft-lct.js";
-import { createR6Request, hashOutput, classifyTool, extractTarget } from "./src/r6.js";
-import { AuditChain } from "./src/audit.js";
-import { SessionStore, type SessionState } from "./src/session-state.js";
-import { PolicyEngine } from "./src/policy.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { PolicyConfig, PolicyEvaluation } from "./src/policy-types.js";
-import { RateLimiter } from "./src/rate-limiter.js";
-import { resolvePreset, listPresets, isPresetName } from "./src/presets.js";
-import { AuditReporter } from "./src/reporter.js";
+import { AuditChain } from "./src/audit.js";
 import { PolicyRegistry, type PolicyEntityId } from "./src/policy-entity.js";
+import { PolicyEngine } from "./src/policy.js";
+import { resolvePreset, listPresets, isPresetName } from "./src/presets.js";
+import { createR6Request, hashOutput, classifyTool, extractTarget } from "./src/r6.js";
+import { RateLimiter } from "./src/rate-limiter.js";
+import { AuditReporter } from "./src/reporter.js";
+import { SessionStore, type SessionState } from "./src/session-state.js";
+import { createSoftLCT } from "./src/soft-lct.js";
 
 type PluginConfig = {
   auditLevel?: string;

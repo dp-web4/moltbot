@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { PolicyEngine } from "./policy.js";
 import type { PolicyConfig, PolicyRule } from "./policy-types.js";
+import { PolicyEngine } from "./policy.js";
 import { RateLimiter } from "./rate-limiter.js";
 
 function rule(overrides: Partial<PolicyRule> & Pick<PolicyRule, "id" | "match">): PolicyRule {

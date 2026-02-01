@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { PolicyRegistry, computePolicyHash, type PolicyEntityId } from "./policy-entity.js";
 import type { PolicyConfig } from "./policy-types.js";
+import { PolicyRegistry, computePolicyHash, type PolicyEntityId } from "./policy-entity.js";
 import { RateLimiter } from "./rate-limiter.js";
 
 describe("PolicyEntity", () => {

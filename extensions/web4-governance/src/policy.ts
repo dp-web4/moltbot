@@ -6,10 +6,10 @@
  * Optionally integrates with RateLimiter for time-windowed rate limiting.
  */
 
-import type { ToolCategory } from "./r6.js";
 import type { PolicyConfig, PolicyDecision, PolicyEvaluation, PolicyRule } from "./policy-types.js";
-import { matchesRule } from "./matchers.js";
+import type { ToolCategory } from "./r6.js";
 import type { RateLimiter } from "./rate-limiter.js";
+import { matchesRule } from "./matchers.js";
 
 export const DEFAULT_POLICY_CONFIG: PolicyConfig = {
   defaultPolicy: "allow",
