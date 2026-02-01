@@ -1,0 +1,7 @@
+{
+  "name": "@openclaw/moltbook",
+  "version": "0.1.0",
+  "description": "Moltbook social network integration for OpenClaw agents",
+  "type": "module",
+  "main": "index.ts"
+}
