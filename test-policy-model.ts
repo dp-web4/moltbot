@@ -13,9 +13,9 @@ async function main() {
   const model = new PolicyModel(
     {
       modelPath: MODEL_PATH,
-      maxInferenceMs: 30000, // Phi-4 needs more time on CPU
+      maxInferenceMs: 10000, // Much faster on GPU
       enabled: true,
-      gpuLayers: 0, // CPU only for this test
+      gpuLayers: 99, // Offload all layers to GPU
     },
     "test-actor",
   );

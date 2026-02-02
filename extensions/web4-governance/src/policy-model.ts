@@ -30,7 +30,7 @@ import {
   DEFAULT_POLICY_MODEL_DECISION,
   PolicyModelError,
 } from "./policy-model-types.js";
-import { ModelRuntime, createPhi4MiniRuntime } from "./policy-model-runtime.js";
+import { ModelRuntime } from "./policy-model-runtime.js";
 import { PolicyEmbeddingStore, createEmbeddingStore } from "./policy-model-embeddings.js";
 import { PolicyEngine } from "./policy.js";
 
@@ -75,7 +75,12 @@ export class PolicyModel {
 
     // Initialize model runtime if enabled
     if (this.config.enabled && this.config.modelPath) {
-      this.runtime = createPhi4MiniRuntime(this.config.modelPath);
+      this.runtime = new ModelRuntime({
+        modelPath: this.config.modelPath,
+        gpuLayers: this.config.gpuLayers ?? 0,
+        contextSize: 4096,
+        verbose: true,
+      });
       try {
         await this.runtime.load();
       } catch (error) {
