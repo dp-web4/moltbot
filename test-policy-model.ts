@@ -4,7 +4,7 @@
 
 import { PolicyModel, createR6ModelRequest } from "./extensions/web4-governance/src/policy-model.js";
 
-const MODEL_PATH = "/home/dp/ai-workspace/models/smollm2-360m-instruct-q8_0.gguf";
+const MODEL_PATH = "/home/dp/ai-workspace/models/phi-4-mini-instruct-Q4_K_M.gguf";
 
 async function main() {
   console.log("=== Policy Model Test ===\n");
@@ -13,7 +13,7 @@ async function main() {
   const model = new PolicyModel(
     {
       modelPath: MODEL_PATH,
-      maxInferenceMs: 5000,
+      maxInferenceMs: 30000, // Phi-4 needs more time on CPU
       enabled: true,
       gpuLayers: 0, // CPU only for this test
     },
