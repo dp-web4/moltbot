@@ -98,6 +98,21 @@
                       "type": "boolean",
                       "default": false,
                       "description": "Treat targetPatterns as regex instead of glob"
+                    },
+                    "rateLimit": {
+                      "type": "object",
+                      "description": "Rate limit: match when action count exceeds threshold within window",
+                      "properties": {
+                        "maxCount": {
+                          "type": "number",
+                          "description": "Maximum number of actions allowed within the window"
+                        },
+                        "windowMs": {
+                          "type": "number",
+                          "description": "Window duration in milliseconds"
+                        }
+                      },
+                      "required": ["maxCount", "windowMs"]
                     }
                   }
                 }
