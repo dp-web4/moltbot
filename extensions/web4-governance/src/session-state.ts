@@ -16,6 +16,12 @@ export type SessionState = {
   categoryCounts: Record<string, number>;
   /** Policy entity ID (policy:<name>:<version>:<hash>) */
   policyEntityId?: string;
+  /** Ed25519 signing key for audit records (hex-encoded private key) */
+  signingPrivateKeyHex?: string;
+  /** Ed25519 public key for signature verification (hex-encoded) */
+  signingPublicKeyHex?: string;
+  /** Short key ID derived from public key */
+  signingKeyId?: string;
 };
 
 export class SessionStore {

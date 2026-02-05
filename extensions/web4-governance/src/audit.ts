@@ -1,8 +1,9 @@
 /**
- * Audit Trail - Hash-linked chain of action records.
+ * Audit Trail - Hash-linked chain of action records with Ed25519 signatures.
  *
  * Each audit record links to its R6 request and the previous record,
- * creating a verifiable chain of provenance.
+ * creating a verifiable chain of provenance. Records are signed with
+ * the session's Ed25519 private key for non-repudiation.
  */
 
 import { createHash } from "node:crypto";
@@ -10,6 +11,7 @@ import { appendFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { R6Request } from "./r6.js";
 import { globToRegex } from "./matchers.js";
+import { signData, verifySignature } from "./signing.js";
 
 export type AuditRecord = {
   recordId: string;
@@ -29,6 +31,10 @@ export type AuditRecord = {
     actionIndex: number;
     prevRecordHash: string;
   };
+  /** Ed25519 signature of the record (hex-encoded, excludes signature field itself) */
+  signature?: string;
+  /** Key ID used for signing (last 32 hex chars of public key) */
+  signingKeyId?: string;
 };
 
 export type AuditFilter = {
@@ -58,15 +64,23 @@ function parseSince(since: string): Date | undefined {
   return isNaN(d.getTime()) ? undefined : d;
 }
 
+export type SigningConfig = {
+  privateKeyHex: string;
+  publicKeyHex: string;
+  keyId: string;
+};
+
 export class AuditChain {
   private storagePath: string;
   private sessionId: string;
   private prevHash: string = "genesis";
   private recordCount: number = 0;
+  private signing?: SigningConfig;
 
-  constructor(storagePath: string, sessionId: string) {
+  constructor(storagePath: string, sessionId: string, signing?: SigningConfig) {
     this.storagePath = storagePath;
     this.sessionId = sessionId;
+    this.signing = signing;
     mkdirSync(join(this.storagePath, "audit"), { recursive: true });
     this.loadExisting();
   }
@@ -107,6 +121,13 @@ export class AuditChain {
       },
     };
 
+    // Sign the record if signing is configured (sign before adding signature fields)
+    if (this.signing) {
+      const dataToSign = JSON.stringify(record);
+      record.signature = signData(dataToSign, this.signing.privateKeyHex);
+      record.signingKeyId = this.signing.keyId;
+    }
+
     const line = JSON.stringify(record);
     appendFileSync(this.filePath, line + "\n");
     this.prevHash = createHash("sha256").update(line).digest("hex").slice(0, 16);
@@ -115,14 +136,26 @@ export class AuditChain {
     return record;
   }
 
-  verify(): { valid: boolean; recordCount: number; errors: string[] } {
+  /**
+   * Verify the audit chain integrity: hash links and optional signatures.
+   * @param publicKeys Optional map of keyId -> publicKeyHex for signature verification.
+   *                   If not provided, signatures are noted but not verified.
+   */
+  verify(publicKeys?: Map<string, string>): {
+    valid: boolean;
+    recordCount: number;
+    errors: string[];
+    signatureStats: { signed: number; verified: number; unverified: number; invalid: number };
+  } {
     const errors: string[] = [];
+    const signatureStats = { signed: 0, verified: 0, unverified: 0, invalid: 0 };
+
     if (!existsSync(this.filePath)) {
-      return { valid: true, recordCount: 0, errors: [] };
+      return { valid: true, recordCount: 0, errors: [], signatureStats };
     }
 
     const content = readFileSync(this.filePath, "utf-8").trim();
-    if (!content) return { valid: true, recordCount: 0, errors: [] };
+    if (!content) return { valid: true, recordCount: 0, errors: [], signatureStats };
 
     const lines = content.split("\n");
     let prevHash = "genesis";
@@ -130,16 +163,39 @@ export class AuditChain {
     for (let i = 0; i < lines.length; i++) {
       try {
         const record: AuditRecord = JSON.parse(lines[i]!);
+
+        // Verify hash chain
         if (record.provenance.prevRecordHash !== prevHash) {
           errors.push(`Record ${i}: hash mismatch (expected ${prevHash}, got ${record.provenance.prevRecordHash})`);
         }
         prevHash = createHash("sha256").update(lines[i]!).digest("hex").slice(0, 16);
+
+        // Verify signature if present
+        if (record.signature && record.signingKeyId) {
+          signatureStats.signed++;
+          const publicKeyHex = publicKeys?.get(record.signingKeyId);
+
+          if (publicKeyHex) {
+            // Reconstruct the unsigned record for verification
+            const { signature: _, signingKeyId: __, ...unsignedRecord } = record;
+            const dataToVerify = JSON.stringify(unsignedRecord);
+
+            if (verifySignature(dataToVerify, record.signature, publicKeyHex)) {
+              signatureStats.verified++;
+            } else {
+              signatureStats.invalid++;
+              errors.push(`Record ${i}: invalid signature`);
+            }
+          } else {
+            signatureStats.unverified++;
+          }
+        }
       } catch (e) {
         errors.push(`Record ${i}: parse error`);
       }
     }
 
-    return { valid: errors.length === 0, recordCount: lines.length, errors };
+    return { valid: errors.length === 0, recordCount: lines.length, errors, signatureStats };
   }
 
   get count(): number {

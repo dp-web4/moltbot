@@ -20,8 +20,9 @@ import {
   isCredentialTarget,
   isMemoryTarget,
 } from "./src/r6.js";
-import { AuditChain } from "./src/audit.js";
+import { AuditChain, type SigningConfig } from "./src/audit.js";
 import { SessionStore, type SessionState } from "./src/session-state.js";
+import { generateSigningKeyPair } from "./src/signing.js";
 import { PolicyEngine } from "./src/policy.js";
 import type { PolicyConfig, PolicyEvaluation } from "./src/policy-types.js";
 import { RateLimiter } from "./src/rate-limiter.js";
@@ -119,6 +120,9 @@ const plugin = {
           policyRegistry.witnessSession(policyEntity.entityId, sessionId);
         }
 
+        // Generate Ed25519 signing keypair for audit record signatures
+        const signingKeys = generateSigningKeyPair();
+
         const state: SessionState = {
           sessionId,
           lct,
@@ -127,13 +131,23 @@ const plugin = {
           toolCounts: {},
           categoryCounts: {},
           policyEntityId,
+          signingPrivateKeyHex: signingKeys.privateKeyHex,
+          signingPublicKeyHex: signingKeys.publicKeyHex,
+          signingKeyId: signingKeys.keyId,
         };
-        const audit = new AuditChain(storagePath, sessionId);
+
+        // Create audit chain with signing config for record signatures
+        const signingConfig: SigningConfig = {
+          privateKeyHex: signingKeys.privateKeyHex,
+          publicKeyHex: signingKeys.publicKeyHex,
+          keyId: signingKeys.keyId,
+        };
+        const audit = new AuditChain(storagePath, sessionId, signingConfig);
         sessionStore.save(state);
         entry = { state, audit };
         sessions.set(sessionKey, entry);
         const policyInfo = policyEntityId ? ` [policy:${presetName}]` : "";
-        logger.info(`[web4] Session ${lct.tokenId} initialized (${auditLevel} audit)${policyInfo}`);
+        logger.info(`[web4] Session ${lct.tokenId} initialized (${auditLevel} audit, keyId:${signingKeys.keyId.slice(0, 8)}...)${policyInfo}`);
       }
       return entry;
     }
@@ -348,22 +362,34 @@ const plugin = {
 
         audit
           .command("verify")
-          .description("Verify audit chain integrity")
+          .description("Verify audit chain integrity and signatures")
           .argument("[sessionId]", "Session ID to verify")
           .action((sessionId?: string) => {
             if (sessionId) {
               const chain = new AuditChain(storagePath, sessionId);
-              const result = chain.verify();
+              // Try to load public key from session state for signature verification
+              const sessionState = sessionStore.load(sessionId);
+              const publicKeys = sessionState?.signingPublicKeyHex && sessionState?.signingKeyId
+                ? new Map([[sessionState.signingKeyId, sessionState.signingPublicKeyHex]])
+                : undefined;
+              const result = chain.verify(publicKeys);
               logger.info(`Chain valid: ${result.valid}`);
               logger.info(`Records: ${result.recordCount}`);
+              const sig = result.signatureStats;
+              logger.info(`Signatures: ${sig.signed} signed, ${sig.verified} verified, ${sig.unverified} unverified, ${sig.invalid} invalid`);
               if (result.errors.length > 0) {
                 logger.info("Errors:");
                 for (const e of result.errors) logger.info(`  - ${e}`);
               }
             } else {
               for (const [, entry] of sessions) {
-                const result = entry.audit.verify();
-                logger.info(`${entry.state.sessionId}: ${result.valid ? "VALID" : "INVALID"} (${result.recordCount} records)`);
+                // Use session's public key for verification
+                const publicKeys = entry.state.signingPublicKeyHex && entry.state.signingKeyId
+                  ? new Map([[entry.state.signingKeyId, entry.state.signingPublicKeyHex]])
+                  : undefined;
+                const result = entry.audit.verify(publicKeys);
+                const sig = result.signatureStats;
+                logger.info(`${entry.state.sessionId}: ${result.valid ? "VALID" : "INVALID"} (${result.recordCount} records, ${sig.verified}/${sig.signed} verified)`);
               }
             }
           });
