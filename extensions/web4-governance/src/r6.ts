@@ -62,12 +62,53 @@ export type R6Result = {
 export type ToolCategory =
   | "file_read"
   | "file_write"
+  | "credential_access"
   | "command"
   | "network"
   | "delegation"
   | "state"
   | "mcp"
   | "unknown";
+
+/** Patterns that indicate credential/secret file access */
+const CREDENTIAL_PATTERNS = [
+  /\.env$/i,
+  /\.env\.[^/]+$/i,
+  /credentials\.[^/]+$/i,
+  /secrets?\.[^/]+$/i,
+  /\.aws\/credentials$/i,
+  /\.ssh\/id_[^/]+$/i,
+  /\.ssh\/known_hosts$/i,
+  /\.netrc$/i,
+  /\.pgpass$/i,
+  /\.npmrc$/i,
+  /\.pypirc$/i,
+  /token[^/]*\.json$/i,
+  /auth[^/]*\.json$/i,
+  /apikey[^/]*$/i,
+];
+
+/** Check if a target path matches credential file patterns */
+export function isCredentialTarget(target: string | undefined): boolean {
+  if (!target) return false;
+  return CREDENTIAL_PATTERNS.some((pattern) => pattern.test(target));
+}
+
+/** Patterns that indicate agent memory file access */
+const MEMORY_FILE_PATTERNS = [
+  /MEMORY\.md$/i,
+  /memory\.md$/i,
+  /\/memory\/[^/]+\.md$/i,
+  /\.moltbot\/.*memory/i,
+  /\.clawdbot\/.*memory/i,
+  /\.openclaw\/.*memory/i,
+];
+
+/** Check if a target path matches memory file patterns */
+export function isMemoryTarget(target: string | undefined): boolean {
+  if (!target) return false;
+  return MEMORY_FILE_PATTERNS.some((pattern) => pattern.test(target));
+}
 
 const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   Read: "file_read",
@@ -85,6 +126,21 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
 
 export function classifyTool(toolName: string): ToolCategory {
   return TOOL_CATEGORIES[toolName] ?? "unknown";
+}
+
+/**
+ * Classify tool with target context - may upgrade to credential_access
+ * if the target matches credential file patterns.
+ */
+export function classifyToolWithTarget(toolName: string, target: string | undefined): ToolCategory {
+  const baseCategory = TOOL_CATEGORIES[toolName] ?? "unknown";
+
+  // Upgrade file_read to credential_access if target matches credential patterns
+  if ((baseCategory === "file_read" || baseCategory === "file_write") && isCredentialTarget(target)) {
+    return "credential_access";
+  }
+
+  return baseCategory;
 }
 
 export function hashInput(input: Record<string, unknown>): string {

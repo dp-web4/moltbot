@@ -11,7 +11,15 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { createSoftLCT } from "./src/soft-lct.js";
-import { createR6Request, hashOutput, classifyTool, extractTarget } from "./src/r6.js";
+import {
+  createR6Request,
+  hashOutput,
+  classifyTool,
+  classifyToolWithTarget,
+  extractTarget,
+  isCredentialTarget,
+  isMemoryTarget,
+} from "./src/r6.js";
 import { AuditChain } from "./src/audit.js";
 import { SessionStore, type SessionState } from "./src/session-state.js";
 import { PolicyEngine } from "./src/policy.js";
@@ -79,6 +87,14 @@ const plugin = {
       logger.info(
         `[web4] Policy engine: ${policyEngine.ruleCount} rules, enforce=${policyEngine.isEnforcing}`,
       );
+    }
+
+    // Log any pattern validation errors (ReDoS protection)
+    if (!policyEngine.isValid) {
+      for (const error of policyEngine.patternValidationErrors) {
+        logger.warn(`[web4] Pattern validation error: ${error}`);
+      }
+      logger.warn(`[web4] Some policy rules have invalid patterns and may not match correctly`);
     }
 
     // Stash for passing policy evaluations from before_tool_call to after_tool_call
@@ -193,10 +209,24 @@ const plugin = {
 
     // Pre-action policy gating
     api.on("before_tool_call", (event, ctx) => {
+      const target = extractTarget(event.toolName, event.params);
+
+      // Security alerting for sensitive targets (independent of policy rules)
+      if (isCredentialTarget(target)) {
+        logger.warn(
+          `[web4-alert] CREDENTIAL ACCESS: ${event.toolName} → ${target} — potential credential exfiltration`,
+        );
+      }
+      if (isMemoryTarget(target) && classifyTool(event.toolName) === "file_write") {
+        logger.warn(
+          `[web4-alert] MEMORY WRITE: ${event.toolName} → ${target} — potential memory poisoning`,
+        );
+      }
+
       if (policyEngine.ruleCount === 0) return;
 
-      const category = classifyTool(event.toolName);
-      const target = extractTarget(event.toolName, event.params);
+      // Use target-aware classification for policy evaluation
+      const category = classifyToolWithTarget(event.toolName, target);
       const { blocked, evaluation } = policyEngine.shouldBlock(event.toolName, category, target);
 
       // Stash evaluation for after_tool_call to pick up

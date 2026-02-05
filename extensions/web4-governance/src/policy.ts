@@ -13,7 +13,7 @@ import type {
   PolicyEvaluation,
   PolicyRule,
 } from "./policy-types.js";
-import { matchesRule } from "./matchers.js";
+import { matchesRule, validatePolicyMatchPatterns } from "./matchers.js";
 import type { RateLimiter } from "./rate-limiter.js";
 
 export const DEFAULT_POLICY_CONFIG: PolicyConfig = {
@@ -28,6 +28,8 @@ export class PolicyEngine {
   private enforce: boolean;
   private rateLimiter?: RateLimiter;
 
+  private validationErrors: string[] = [];
+
   constructor(config: Partial<PolicyConfig> = {}, rateLimiter?: RateLimiter) {
     const merged = { ...DEFAULT_POLICY_CONFIG, ...config };
     this.defaultPolicy = merged.defaultPolicy;
@@ -35,6 +37,23 @@ export class PolicyEngine {
     // Sort by priority ascending (lower = higher priority)
     this.rules = [...merged.rules].sort((a, b) => a.priority - b.priority);
     this.rateLimiter = rateLimiter;
+
+    // Validate all regex patterns at load time (ReDoS protection)
+    this.validationErrors = [];
+    for (const rule of this.rules) {
+      const errors = validatePolicyMatchPatterns(rule.match, rule.id);
+      this.validationErrors.push(...errors);
+    }
+  }
+
+  /** Get any validation errors from pattern validation (ReDoS protection). */
+  get patternValidationErrors(): readonly string[] {
+    return this.validationErrors;
+  }
+
+  /** Check if all patterns validated successfully. */
+  get isValid(): boolean {
+    return this.validationErrors.length === 0;
   }
 
   /** Evaluate a tool call against all rules. First match wins. */
