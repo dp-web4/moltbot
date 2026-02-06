@@ -24,6 +24,7 @@ import type {
 } from "./policy-types.js";
 import type { ToolCategory } from "./r6.js";
 import type { RateLimiter } from "./rate-limiter.js";
+import { matchesTimeWindow } from "./matchers.js";
 import { resolvePreset } from "./presets.js";
 
 export type PolicyEntityId = `policy:${string}:${string}:${string}`;
@@ -175,6 +176,11 @@ export class PolicyEntity {
       if (!matched) {
         return false;
       }
+    }
+
+    // Time window match
+    if (match.timeWindow && !matchesTimeWindow(match.timeWindow)) {
+      return false;
     }
 
     return true;

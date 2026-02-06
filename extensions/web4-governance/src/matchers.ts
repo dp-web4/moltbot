@@ -5,8 +5,8 @@
  * against policy rule criteria.
  */
 
+import type { PolicyMatch, TimeWindow } from "./policy-types.js";
 import type { ToolCategory } from "./r6.js";
-import type { PolicyMatch } from "./policy-types.js";
 
 /**
  * Validate a regex pattern for potential ReDoS vulnerabilities.
@@ -17,7 +17,9 @@ import type { PolicyMatch } from "./policy-types.js";
  * - Overlapping alternations with quantifiers: (a|a)+
  * - Excessive backtracking patterns
  */
-export function validateRegexPattern(pattern: string): { valid: true } | { valid: false; reason: string } {
+export function validateRegexPattern(
+  pattern: string,
+): { valid: true } | { valid: false; reason: string } {
   // Check for nested quantifiers (common ReDoS pattern)
   // Matches patterns like (.*)+, (.+)+, (a*)+, etc.
   const nestedQuantifier = /\([^)]*[*+]\)[*+?]|\([^)]*[*+?]\)\{/;
@@ -35,7 +37,10 @@ export function validateRegexPattern(pattern: string): { valid: true } | { valid
       const [, alt1, alt2] = altMatch;
       // If either alternative is a superset wildcard, it's risky
       if (alt1 === ".*" || alt1 === ".+" || alt2 === ".*" || alt2 === ".+") {
-        return { valid: false, reason: "Overlapping alternations with wildcards (potential ReDoS)" };
+        return {
+          valid: false,
+          reason: "Overlapping alternations with wildcards (potential ReDoS)",
+        };
       }
     }
   }
@@ -118,6 +123,72 @@ export function matchesList(value: string, list: string[]): boolean {
   return list.includes(value);
 }
 
+/**
+ * Check if the current time falls within a time window.
+ * Returns true if within the allowed window, false otherwise.
+ */
+export function matchesTimeWindow(timeWindow: TimeWindow, now: Date = new Date()): boolean {
+  // Get time in specified timezone (or local if not specified)
+  let hours: number;
+  let dayOfWeek: number;
+
+  if (timeWindow.timezone) {
+    try {
+      // Use Intl to get time in specified timezone
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: timeWindow.timezone,
+        hour: "numeric",
+        hour12: false,
+        weekday: "short",
+      });
+      const parts = formatter.formatToParts(now);
+      const hourPart = parts.find((p) => p.type === "hour");
+      const dayPart = parts.find((p) => p.type === "weekday");
+
+      hours = hourPart ? parseInt(hourPart.value, 10) : now.getHours();
+
+      // Convert weekday name to number
+      const dayMap: Record<string, number> = {
+        Sun: 0,
+        Mon: 1,
+        Tue: 2,
+        Wed: 3,
+        Thu: 4,
+        Fri: 5,
+        Sat: 6,
+      };
+      dayOfWeek =
+        dayPart && dayMap[dayPart.value] !== undefined ? dayMap[dayPart.value]! : now.getDay();
+    } catch {
+      // Invalid timezone, fall back to local
+      hours = now.getHours();
+      dayOfWeek = now.getDay();
+    }
+  } else {
+    hours = now.getHours();
+    dayOfWeek = now.getDay();
+  }
+
+  // Check allowed hours
+  if (timeWindow.allowedHours) {
+    const [startHour, endHour] = timeWindow.allowedHours;
+    // Handle overnight windows (e.g., [22, 6] for 10pm-6am)
+    if (startHour <= endHour) {
+      if (hours < startHour || hours >= endHour) return false;
+    } else {
+      // Overnight: valid if >= start OR < end
+      if (hours < startHour && hours >= endHour) return false;
+    }
+  }
+
+  // Check allowed days
+  if (timeWindow.allowedDays) {
+    if (!timeWindow.allowedDays.includes(dayOfWeek)) return false;
+  }
+
+  return true;
+}
+
 /** Check if a target string matches any of the given patterns. */
 export function matchesTarget(
   target: string | undefined,
@@ -137,8 +208,8 @@ export function matchesTarget(
 
 /**
  * Evaluate whether a tool call matches a PolicyMatch specification.
- * All specified criteria are AND'd: if tools, categories, and targetPatterns
- * are all specified, all must match.
+ * All specified criteria are AND'd: if tools, categories, targetPatterns,
+ * and timeWindow are all specified, all must match.
  */
 export function matchesRule(
   toolName: string,
@@ -154,5 +225,7 @@ export function matchesRule(
       return false;
     }
   }
+  // Check time window constraint
+  if (match.timeWindow && !matchesTimeWindow(match.timeWindow)) return false;
   return true;
 }

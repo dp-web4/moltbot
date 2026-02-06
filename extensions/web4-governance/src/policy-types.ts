@@ -16,6 +16,19 @@ export type RateLimitSpec = {
   windowMs: number;
 };
 
+/**
+ * Temporal constraints for policy rules.
+ * Rule only matches during specified time windows.
+ */
+export type TimeWindow = {
+  /** Allowed hours [start, end] in 24h format. E.g., [9, 17] = 9am-5pm */
+  allowedHours?: [number, number];
+  /** Allowed days of week. 0=Sunday, 1=Monday, ... 6=Saturday. E.g., [1,2,3,4,5] = Mon-Fri */
+  allowedDays?: number[];
+  /** Timezone for time calculations. Defaults to system timezone. */
+  timezone?: string;
+};
+
 export type PolicyMatch = {
   /** Tool names to match (e.g. ["Bash", "Write"]) */
   tools?: string[];
@@ -27,6 +40,8 @@ export type PolicyMatch = {
   targetPatternsAreRegex?: boolean;
   /** Rate limit: match when action count exceeds threshold within window */
   rateLimit?: RateLimitSpec;
+  /** Temporal constraint: rule only matches during specified time windows */
+  timeWindow?: TimeWindow;
 };
 
 export type PolicyRule = {
