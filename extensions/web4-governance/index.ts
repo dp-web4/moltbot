@@ -22,6 +22,7 @@ import {
   classifyTool,
   classifyToolWithTarget,
   extractTarget,
+  extractTargets,
   isCredentialTarget,
   isMemoryTarget,
 } from "./src/r6.js";
@@ -260,16 +261,30 @@ const plugin = {
     // Pre-action policy gating
     api.on("before_tool_call", (event, ctx) => {
       const target = extractTarget(event.toolName, event.params);
+      const allTargets = extractTargets(event.toolName, event.params);
 
       // Security alerting for sensitive targets (independent of policy rules)
-      if (isCredentialTarget(target)) {
+      // Check all extracted targets, not just the primary one
+      const credentialTargets = allTargets.filter(isCredentialTarget);
+      if (credentialTargets.length > 0) {
+        const targetList =
+          credentialTargets.length > 3
+            ? `${credentialTargets.slice(0, 3).join(", ")} (+${credentialTargets.length - 3} more)`
+            : credentialTargets.join(", ");
         logger.warn(
-          `[web4-alert] CREDENTIAL ACCESS: ${event.toolName} → ${target} — potential credential exfiltration`,
+          `[web4-alert] CREDENTIAL ACCESS: ${event.toolName} → ${targetList} — potential credential exfiltration`,
         );
       }
-      if (isMemoryTarget(target) && classifyTool(event.toolName) === "file_write") {
+
+      const isWriteOp = classifyTool(event.toolName) === "file_write";
+      const memoryTargets = allTargets.filter(isMemoryTarget);
+      if (memoryTargets.length > 0 && isWriteOp) {
+        const targetList =
+          memoryTargets.length > 3
+            ? `${memoryTargets.slice(0, 3).join(", ")} (+${memoryTargets.length - 3} more)`
+            : memoryTargets.join(", ");
         logger.warn(
-          `[web4-alert] MEMORY WRITE: ${event.toolName} → ${target} — potential memory poisoning`,
+          `[web4-alert] MEMORY WRITE: ${event.toolName} → ${targetList} — potential memory poisoning`,
         );
       }
 

@@ -38,6 +38,8 @@ export type R6RequestDetail = {
   toolName: string;
   category: ToolCategory;
   target?: string;
+  /** Additional targets for multi-file operations (glob, batch commands) */
+  targets?: string[];
   inputHash: string;
 };
 
@@ -136,7 +138,10 @@ export function classifyToolWithTarget(toolName: string, target: string | undefi
   const baseCategory = TOOL_CATEGORIES[toolName] ?? "unknown";
 
   // Upgrade file_read to credential_access if target matches credential patterns
-  if ((baseCategory === "file_read" || baseCategory === "file_write") && isCredentialTarget(target)) {
+  if (
+    (baseCategory === "file_read" || baseCategory === "file_write") &&
+    isCredentialTarget(target)
+  ) {
     return "credential_access";
   }
 
@@ -152,7 +157,10 @@ export function hashOutput(output: unknown): string {
   return createHash("sha256").update(str).digest("hex").slice(0, 16);
 }
 
-export function extractTarget(toolName: string, params: Record<string, unknown>): string | undefined {
+export function extractTarget(
+  toolName: string,
+  params: Record<string, unknown>,
+): string | undefined {
   if (params.file_path) return String(params.file_path);
   if (params.path) return String(params.path);
   if (params.pattern) return String(params.pattern);
@@ -162,6 +170,107 @@ export function extractTarget(toolName: string, params: Record<string, unknown>)
   }
   if (params.url) return String(params.url);
   return undefined;
+}
+
+/**
+ * Extract all targets from tool parameters for multi-file operations.
+ * Returns an array of all identifiable targets (paths, patterns, URLs).
+ */
+export function extractTargets(toolName: string, params: Record<string, unknown>): string[] {
+  const targets: string[] = [];
+
+  // Direct file paths
+  if (params.file_path) targets.push(String(params.file_path));
+  if (params.path) targets.push(String(params.path));
+
+  // Glob patterns (may match multiple files)
+  if (params.pattern) targets.push(String(params.pattern));
+
+  // URLs
+  if (params.url) targets.push(String(params.url));
+
+  // Bash commands - extract file paths from command string
+  if (params.command && toolName === "Bash") {
+    const cmd = String(params.command);
+    const extracted = extractPathsFromCommand(cmd);
+    targets.push(...extracted);
+  }
+
+  // Task tool - check for file references in prompt
+  if (params.prompt && toolName === "Task") {
+    const prompt = String(params.prompt);
+    const extracted = extractPathsFromText(prompt);
+    targets.push(...extracted);
+  }
+
+  // Edit tool - old_string might reference files
+  if (params.old_string && toolName === "Edit") {
+    // file_path is the primary target, already captured above
+  }
+
+  // Grep tool - may have additional path context
+  if (params.glob && toolName === "Grep") {
+    targets.push(String(params.glob));
+  }
+
+  // Deduplicate and return
+  return [...new Set(targets)];
+}
+
+/**
+ * Extract file paths from a bash command string.
+ * Identifies common path patterns in commands.
+ */
+function extractPathsFromCommand(cmd: string): string[] {
+  const paths: string[] = [];
+
+  // Match absolute paths
+  const absolutePathRegex = /(?:^|\s)(\/[^\s;|&<>'"]+)/g;
+  let match;
+  while ((match = absolutePathRegex.exec(cmd)) !== null) {
+    const path = match[1]!;
+    // Filter out common non-file arguments
+    if (!path.startsWith("/dev/") && !path.startsWith("/proc/") && !path.startsWith("/sys/")) {
+      paths.push(path);
+    }
+  }
+
+  // Match relative paths with common extensions
+  const relativePathRegex = /(?:^|\s)(\.{0,2}\/[^\s;|&<>'"]+\.[a-zA-Z0-9]+)/g;
+  while ((match = relativePathRegex.exec(cmd)) !== null) {
+    paths.push(match[1]!);
+  }
+
+  // Match home directory paths
+  const homePathRegex = /(?:^|\s)(~\/[^\s;|&<>'"]+)/g;
+  while ((match = homePathRegex.exec(cmd)) !== null) {
+    paths.push(match[1]!);
+  }
+
+  return paths;
+}
+
+/**
+ * Extract file paths mentioned in text (e.g., Task prompts).
+ * Looks for path-like patterns.
+ */
+function extractPathsFromText(text: string): string[] {
+  const paths: string[] = [];
+
+  // Match paths in backticks or quotes
+  const quotedPathRegex = /[`"']([/~][^`"'\s]+)[`"']/g;
+  let match;
+  while ((match = quotedPathRegex.exec(text)) !== null) {
+    paths.push(match[1]!);
+  }
+
+  // Match standalone absolute paths
+  const absolutePathRegex = /\s(\/[^\s,;:]+\.[a-zA-Z0-9]+)/g;
+  while ((match = absolutePathRegex.exec(text)) !== null) {
+    paths.push(match[1]!);
+  }
+
+  return paths;
 }
 
 export function createR6Request(
@@ -174,6 +283,13 @@ export function createR6Request(
   auditLevel: string,
   policyEntityId?: string,
 ): R6Request {
+  const primaryTarget = extractTarget(toolName, params);
+  const allTargets = extractTargets(toolName, params);
+
+  // Only include targets array if there are multiple unique targets
+  const hasMultipleTargets =
+    allTargets.length > 1 || (allTargets.length === 1 && allTargets[0] !== primaryTarget);
+
   return {
     id: `r6:${randomUUID().slice(0, 8)}`,
     timestamp: new Date().toISOString(),
@@ -191,7 +307,8 @@ export function createR6Request(
     request: {
       toolName,
       category: classifyTool(toolName),
-      target: extractTarget(toolName, params),
+      target: primaryTarget,
+      targets: hasMultipleTargets ? allTargets : undefined,
       inputHash: hashInput(params),
     },
     reference: {

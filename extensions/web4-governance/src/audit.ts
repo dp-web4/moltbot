@@ -20,6 +20,8 @@ export type AuditRecord = {
   tool: string;
   category: string;
   target?: string;
+  /** Additional targets for multi-file operations */
+  targets?: string[];
   result: {
     status: "success" | "error" | "blocked";
     outputHash?: string;
@@ -113,6 +115,7 @@ export class AuditChain {
       tool: r6.request.toolName,
       category: r6.request.category,
       target: r6.request.target,
+      targets: r6.request.targets,
       result,
       provenance: {
         sessionId: this.sessionId,
@@ -166,7 +169,9 @@ export class AuditChain {
 
         // Verify hash chain
         if (record.provenance.prevRecordHash !== prevHash) {
-          errors.push(`Record ${i}: hash mismatch (expected ${prevHash}, got ${record.provenance.prevRecordHash})`);
+          errors.push(
+            `Record ${i}: hash mismatch (expected ${prevHash}, got ${record.provenance.prevRecordHash})`,
+          );
         }
         prevHash = createHash("sha256").update(lines[i]!).digest("hex").slice(0, 16);
 
