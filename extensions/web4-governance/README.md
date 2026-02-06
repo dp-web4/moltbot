@@ -13,9 +13,63 @@ AI agents executing tools (file access, shell commands, network requests) need a
 - **Cryptographic proof**: Ed25519 signatures on audit records for non-repudiation
 - **Time-based policies**: Restrict operations to business hours
 
+## Installation
+
+### One-Line Install (Recommended)
+
+If you have OpenClaw installed, run:
+
+```bash
+openclaw plugins install @moltbot/web4-governance
+```
+
+Then enable it with the safety preset:
+
+```bash
+openclaw plugins enable web4-governance
+```
+
+### Manual Install
+
+1. Copy the `web4-governance` folder to your OpenClaw extensions directory:
+
+   ```bash
+   cp -r extensions/web4-governance ~/.openclaw/plugins/
+   ```
+
+2. Add to your config (`~/.openclaw/config.json`):
+
+   ```json
+   {
+     "plugins": {
+       "entries": {
+         "web4-governance": { "enabled": true }
+       }
+     }
+   }
+   ```
+
+3. Restart OpenClaw/moltbot.
+
+### Verify Installation
+
+```bash
+openclaw plugins list
+# Should show: web4-governance  loaded
+```
+
 ## Quick Start
 
-Enable in your moltbot config:
+Choose your security level:
+
+| If you want...                  | Use this preset |
+| ------------------------------- | --------------- |
+| Full protection (recommended)   | `safety`        |
+| Audit only, no blocking         | `permissive`    |
+| Maximum security, default-deny  | `strict`        |
+| Record everything, dry-run mode | `audit-only`    |
+
+Add to your config:
 
 ```json
 {
@@ -27,7 +81,12 @@ Enable in your moltbot config:
 }
 ```
 
-Available presets: `permissive`, `safety` (recommended), `strict`, `audit-only`
+That's it! The plugin will now:
+
+- Block dangerous commands (`rm -rf`, etc.)
+- Block access to secret files (`.env`, credentials)
+- Warn on network access and memory file writes
+- Create a signed audit trail of all agent actions
 
 ## Features
 
