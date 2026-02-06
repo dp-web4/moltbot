@@ -202,7 +202,21 @@ describe("PolicyEngine", () => {
           reason: "Destructive command blocked",
           match: {
             tools: ["Bash"],
-            targetPatterns: ["rm\\s+-rf", "mkfs\\."],
+            // Block rm with ANY flags, mkfs.*
+            targetPatterns: ["rm\\s+-", "mkfs\\."],
+            targetPatternsAreRegex: true,
+          },
+        },
+        {
+          id: "warn-file-delete",
+          name: "Warn on file deletion",
+          priority: 2,
+          decision: "warn",
+          reason: "File deletion flagged",
+          match: {
+            tools: ["Bash"],
+            // Warn on plain rm (no flags)
+            targetPatterns: ["rm\\s+[^-]"],
             targetPatternsAreRegex: true,
           },
         },
@@ -234,6 +248,23 @@ describe("PolicyEngine", () => {
       const { blocked, evaluation } = engine.shouldBlock("Bash", "command", "rm -rf ./old_build");
       expect(blocked).toBe(true);
       expect(evaluation.reason).toBe("Destructive command blocked");
+    });
+
+    it("should block rm -f (any flag)", () => {
+      const { blocked } = engine.shouldBlock("Bash", "command", "rm -f temp.txt");
+      expect(blocked).toBe(true);
+    });
+
+    it("should block rm -r (recursive)", () => {
+      const { blocked } = engine.shouldBlock("Bash", "command", "rm -r ./cache");
+      expect(blocked).toBe(true);
+    });
+
+    it("should warn on plain rm (no flags)", () => {
+      const { blocked, evaluation } = engine.shouldBlock("Bash", "command", "rm temp.txt");
+      expect(blocked).toBe(false);
+      expect(evaluation.decision).toBe("warn");
+      expect(evaluation.reason).toBe("File deletion flagged");
     });
 
     it("should block mkfs", () => {

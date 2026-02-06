@@ -35,27 +35,56 @@ This document details exactly what each policy preset blocks, warns on, and allo
 
 ### What Gets Denied
 
-| Rule ID                     | Trigger                                    | Example Blocked                        |
-| --------------------------- | ------------------------------------------ | -------------------------------------- |
-| `deny-destructive-commands` | `rm -rf` or `mkfs.*` in Bash commands      | `rm -rf ./build`, `mkfs.ext4 /dev/sda` |
-| `deny-secret-files`         | Reading files matching credential patterns | `.env`, `.aws/credentials`, `*.apikey` |
+| Rule ID                     | Trigger                                    | Example Blocked                          |
+| --------------------------- | ------------------------------------------ | ---------------------------------------- |
+| `deny-destructive-commands` | `rm` with ANY flags, or `mkfs.*`           | `rm -rf ./build`, `rm -f file`, `mkfs.*` |
+| `deny-secret-files`         | Reading files matching credential patterns | `.env`, `.aws/credentials`, `*.apikey`   |
 
-**Full list of blocked file patterns:**
+**Why all `rm -` flags are blocked:**
+
+- `rm -f` - bypasses confirmation prompts
+- `rm -r` - recursive deletion
+- `rm -i` - interactive mode (agent can't respond to prompts)
+- Any flag combination is risky for autonomous agents
+
+**Full list of blocked credential patterns:**
+
+Environment & secrets:
 
 - `**/.env`, `**/.env.*`
-- `**/credentials.*`
-- `**/*secret*`
-- `**/.aws/credentials`
-- `**/.ssh/id_*`
-- `**/.netrc`, `**/.pgpass`
+- `**/credentials.*`, `**/*secret*`
+- `**/token*.json`, `**/auth*.json`, `**/*apikey*`
+
+Cloud providers:
+
+- `**/.aws/credentials`, `**/.aws/config`
+
+SSH:
+
+- `**/.ssh/id_*`, `**/.ssh/config`
+
+Package managers:
+
 - `**/.npmrc`, `**/.pypirc`
-- `**/token*.json`, `**/auth*.json`
-- `**/*apikey*`
+
+Databases:
+
+- `**/.netrc`, `**/.pgpass`, `**/.my.cnf`
+
+Containers & orchestration:
+
+- `**/.docker/config.json`
+- `**/.kube/config`
+
+Encryption keys:
+
+- `**/.gnupg/*`, `**/.gpg/*`
 
 ### What Gets Warned
 
 | Rule ID             | Trigger                       | Example Flagged            |
 | ------------------- | ----------------------------- | -------------------------- |
+| `warn-file-delete`  | Plain `rm` (no flags)         | `rm file.txt`              |
 | `warn-memory-write` | Writing to agent memory files | `MEMORY.md`, `memory/*.md` |
 | `warn-network`      | Any network access            | `WebFetch`, `WebSearch`    |
 

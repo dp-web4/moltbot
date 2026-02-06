@@ -24,39 +24,69 @@ const SAFETY_RULES: PolicyRule[] = [
     reason: "Destructive command blocked by safety preset",
     match: {
       tools: ["Bash"],
-      targetPatterns: ["rm\\s+-rf", "mkfs\\."],
+      // Block: rm with ANY flags, mkfs.* (filesystem format)
+      // Rationale: rm -f bypasses prompts, rm -r is recursive, all flags are risky for agents
+      targetPatterns: ["rm\\s+-", "mkfs\\."],
+      targetPatternsAreRegex: true,
+    },
+  },
+  {
+    id: "warn-file-delete",
+    name: "Warn on file deletion",
+    priority: 2,
+    decision: "warn",
+    reason: "File deletion flagged - use with caution",
+    match: {
+      tools: ["Bash"],
+      // Warn on plain rm (no flags) - less dangerous but still destructive
+      // Matches "rm file" or "rm ./path" but not "rm -rf" (caught by deny rule above)
+      targetPatterns: ["rm\\s+[^-]"],
       targetPatternsAreRegex: true,
     },
   },
   {
     id: "deny-secret-files",
     name: "Block reading secret/credential files",
-    priority: 2,
+    priority: 3,
     decision: "deny",
     reason: "Credential/secret file access denied by safety preset",
     match: {
       categories: ["file_read", "credential_access"],
       targetPatterns: [
+        // Environment and general secrets
         "**/.env",
         "**/.env.*",
         "**/credentials.*",
         "**/*secret*",
-        "**/.aws/credentials",
-        "**/.ssh/id_*",
-        "**/.netrc",
-        "**/.pgpass",
-        "**/.npmrc",
-        "**/.pypirc",
         "**/token*.json",
         "**/auth*.json",
         "**/*apikey*",
+        // Cloud provider credentials
+        "**/.aws/credentials",
+        "**/.aws/config",
+        // SSH keys
+        "**/.ssh/id_*",
+        "**/.ssh/config",
+        // Package manager auth
+        "**/.npmrc",
+        "**/.pypirc",
+        // Database/service credentials
+        "**/.netrc",
+        "**/.pgpass",
+        "**/.my.cnf",
+        // Container/orchestration credentials
+        "**/.docker/config.json",
+        "**/.kube/config",
+        // Encryption keys
+        "**/.gnupg/*",
+        "**/.gpg/*",
       ],
     },
   },
   {
     id: "warn-memory-write",
     name: "Warn on agent memory file modifications",
-    priority: 3,
+    priority: 4,
     decision: "warn",
     reason: "Memory file modification flagged - potential memory poisoning",
     match: {
@@ -156,13 +186,12 @@ export function isPresetName(name: string): name is PresetName {
  *   2. Top-level overrides (defaultPolicy, enforce) from user config
  *   3. Additional rules from user config are appended after preset rules
  */
-export function resolvePreset(
-  presetName: string,
-  overrides?: Partial<PolicyConfig>,
-): PolicyConfig {
+export function resolvePreset(presetName: string, overrides?: Partial<PolicyConfig>): PolicyConfig {
   const preset = getPreset(presetName);
   if (!preset) {
-    throw new Error(`Unknown policy preset: "${presetName}". Available: ${Object.keys(PRESETS).join(", ")}`);
+    throw new Error(
+      `Unknown policy preset: "${presetName}". Available: ${Object.keys(PRESETS).join(", ")}`,
+    );
   }
 
   const base = { ...preset.config };

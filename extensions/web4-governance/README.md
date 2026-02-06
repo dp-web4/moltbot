@@ -81,9 +81,9 @@ Add to your config:
 
 That's it! The plugin will now:
 
-- Block dangerous commands (`rm -rf`, etc.)
-- Block access to secret files (`.env`, credentials)
-- Warn on network access and memory file writes
+- Block dangerous commands (`rm` with any flags, `mkfs.*`)
+- Block access to secret files (`.env`, credentials, Docker/Kube configs, GPG keys)
+- Warn on file deletion, network access, and memory file writes
 - Create a signed audit trail of all agent actions
 
 ## Features
@@ -100,14 +100,14 @@ That's it! The plugin will now:
 
 ### Security Features
 
-| Feature                          | Description                                                          |
-| -------------------------------- | -------------------------------------------------------------------- |
-| **Credential Detection**         | Alerts on access to `.env`, `.aws/credentials`, SSH keys, API tokens |
-| **Memory Protection**            | Warns on writes to `MEMORY.md` and agent memory files                |
-| **Destructive Command Blocking** | Denies `rm -rf`, `mkfs.*`, and other dangerous commands              |
-| **Multi-target Extraction**      | Detects all file paths in bash commands and Task prompts             |
-| **ReDoS Protection**             | Validates regex patterns to prevent denial-of-service                |
-| **Temporal Constraints**         | Rules that only apply during certain hours/days                      |
+| Feature                          | Description                                                                   |
+| -------------------------------- | ----------------------------------------------------------------------------- |
+| **Credential Detection**         | Blocks `.env`, `.aws/*`, `.ssh/*`, `.docker/config.json`, `.kube/config`, GPG |
+| **Memory Protection**            | Warns on writes to `MEMORY.md` and agent memory files                         |
+| **Destructive Command Blocking** | Denies `rm` with any flags, `mkfs.*`; warns on plain `rm`                     |
+| **Multi-target Extraction**      | Detects all file paths in bash commands and Task prompts                      |
+| **ReDoS Protection**             | Validates regex patterns to prevent denial-of-service                         |
+| **Temporal Constraints**         | Rules that only apply during certain hours/days                               |
 
 ### Policy Presets
 
@@ -302,7 +302,7 @@ moltbot audit verify <sessionId>
 
 - **Credential exfiltration**: Detects and alerts on access to secret files
 - **Memory poisoning**: Warns when agents write to their own memory files
-- **Destructive commands**: Blocks `rm -rf`, `mkfs.*`, system modifications
+- **Destructive commands**: Blocks `rm` with any flags, `mkfs.*`, system modifications
 - **Audit tampering**: Hash chain + signatures make tampering detectable
 - **Rate limit bypass**: SQLite persistence survives restarts
 
