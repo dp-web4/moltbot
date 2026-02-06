@@ -65,6 +65,8 @@ Choose your security level:
 | Maximum security, default-deny  | `strict`        |
 | Record everything, dry-run mode | `audit-only`    |
 
+For detailed information on what each preset blocks, warns, and allows, see **[PRESETS.md](./PRESETS.md)**.
+
 Add to your config:
 
 ```json

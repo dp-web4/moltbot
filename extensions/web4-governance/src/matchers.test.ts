@@ -56,12 +56,13 @@ describe("matchesTarget", () => {
   });
 
   it("should match regex patterns", () => {
-    expect(matchesTarget("rm -rf /", ["rm\\s+-rf"], true)).toBe(true);
+    // Test with realistic folder paths
+    expect(matchesTarget("rm -rf ./test_output", ["rm\\s+-rf"], true)).toBe(true);
     expect(matchesTarget("ls -la", ["rm\\s+-rf"], true)).toBe(false);
   });
 
   it("should match if any pattern matches", () => {
-    expect(matchesTarget("rm -rf /", ["mkfs\\.", "rm\\s+-rf"], true)).toBe(true);
+    expect(matchesTarget("rm -rf ./cache", ["mkfs\\.", "rm\\s+-rf"], true)).toBe(true);
   });
 
   it("should return false for undefined target", () => {
@@ -71,8 +72,9 @@ describe("matchesTarget", () => {
 
 describe("matchesRule", () => {
   it("should match when all criteria match", () => {
+    // Test with realistic folder path
     expect(
-      matchesRule("Bash", "command", "rm -rf /", {
+      matchesRule("Bash", "command", "rm -rf ./dist", {
         tools: ["Bash"],
         categories: ["command"],
         targetPatterns: ["rm\\s+-rf"],
@@ -115,6 +117,8 @@ describe("matchesRule", () => {
   });
 
   it("should match with only categories specified", () => {
-    expect(matchesRule("WebFetch", "network", "https://x.com", { categories: ["network"] })).toBe(true);
+    expect(matchesRule("WebFetch", "network", "https://x.com", { categories: ["network"] })).toBe(
+      true,
+    );
   });
 });

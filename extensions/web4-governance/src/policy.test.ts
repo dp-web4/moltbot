@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { PolicyEngine } from "./policy.js";
 import type { PolicyConfig, PolicyRule } from "./policy-types.js";
+import { PolicyEngine } from "./policy.js";
 import { RateLimiter } from "./rate-limiter.js";
 
 function rule(overrides: Partial<PolicyRule> & Pick<PolicyRule, "id" | "match">): PolicyRule {
@@ -55,9 +55,7 @@ describe("PolicyEngine", () => {
 
     it("should match by category", () => {
       const engine = new PolicyEngine({
-        rules: [
-          rule({ id: "no-network", decision: "warn", match: { categories: ["network"] } }),
-        ],
+        rules: [rule({ id: "no-network", decision: "warn", match: { categories: ["network"] } })],
       });
       const result = engine.evaluate("WebFetch", "network", "https://example.com");
       expect(result.decision).toBe("warn");
@@ -73,7 +71,8 @@ describe("PolicyEngine", () => {
           }),
         ],
       });
-      expect(engine.evaluate("Bash", "command", "rm -rf /").decision).toBe("deny");
+      // Test with realistic folder path, not root
+      expect(engine.evaluate("Bash", "command", "rm -rf ./test_output").decision).toBe("deny");
       expect(engine.evaluate("Bash", "command", "ls -la").decision).toBe("allow");
     });
 
@@ -104,8 +103,8 @@ describe("PolicyEngine", () => {
           }),
         ],
       });
-      // Both match → deny
-      expect(engine.evaluate("Bash", "command", "rm -rf /tmp").decision).toBe("deny");
+      // Both match → deny (using realistic test folder path)
+      expect(engine.evaluate("Bash", "command", "rm -rf ./build_output").decision).toBe("deny");
       // Tool matches, target doesn't → allow (default)
       expect(engine.evaluate("Bash", "command", "ls").decision).toBe("allow");
       // Target matches, tool doesn't → allow (default)
@@ -116,7 +115,12 @@ describe("PolicyEngine", () => {
       const engine = new PolicyEngine({
         rules: [
           rule({ id: "allow-read", priority: 1, decision: "allow", match: { tools: ["Read"] } }),
-          rule({ id: "deny-all-reads", priority: 10, decision: "deny", match: { categories: ["file_read"] } }),
+          rule({
+            id: "deny-all-reads",
+            priority: 10,
+            decision: "deny",
+            match: { categories: ["file_read"] },
+          }),
         ],
       });
       // Read matches both, but allow-read has higher priority
@@ -127,9 +131,7 @@ describe("PolicyEngine", () => {
 
     it("should include reason from matched rule", () => {
       const engine = new PolicyEngine({
-        rules: [
-          rule({ id: "x", reason: "Blocked for safety", match: { tools: ["Bash"] } }),
-        ],
+        rules: [rule({ id: "x", reason: "Blocked for safety", match: { tools: ["Bash"] } })],
       });
       expect(engine.evaluate("Bash", "command", "ls").reason).toBe("Blocked for safety");
     });
@@ -228,7 +230,8 @@ describe("PolicyEngine", () => {
     const engine = new PolicyEngine(config);
 
     it("should block rm -rf", () => {
-      const { blocked, evaluation } = engine.shouldBlock("Bash", "command", "rm -rf /tmp/data");
+      // Test with realistic project folder, not system paths
+      const { blocked, evaluation } = engine.shouldBlock("Bash", "command", "rm -rf ./old_build");
       expect(blocked).toBe(true);
       expect(evaluation.reason).toBe("Destructive command blocked");
     });

@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import type { PolicyConfig, PolicyRule, PolicyMatch } from "./policy-types.js";
 import {
   PolicyEntity,
   PolicyRegistry,
   computePolicyHash,
   type PolicyEntityId,
 } from "./policy-entity.js";
-import type { PolicyConfig, PolicyRule, PolicyMatch } from "./policy-types.js";
 import { RateLimiter } from "./rate-limiter.js";
 
 describe("PolicyEntity", () => {
@@ -45,9 +45,9 @@ describe("PolicyEntity", () => {
     });
 
     it("throws when neither config nor preset provided", () => {
-      expect(() =>
-        registry.registerPolicy({ name: "invalid" })
-      ).toThrow("Must provide either config or preset");
+      expect(() => registry.registerPolicy({ name: "invalid" })).toThrow(
+        "Must provide either config or preset",
+      );
     });
 
     it("throws when both config and preset provided", () => {
@@ -56,7 +56,7 @@ describe("PolicyEntity", () => {
           name: "invalid",
           config: { defaultPolicy: "allow", enforce: true, rules: [] },
           preset: "safety",
-        })
+        }),
       ).toThrow("Cannot provide both config and preset");
     });
   });
@@ -163,7 +163,8 @@ describe("PolicyEntity evaluation", () => {
       preset: "safety",
     });
 
-    const result = entity.evaluate("Bash", "command", "rm -rf /");
+    // Test with realistic folder path, not root
+    const result = entity.evaluate("Bash", "command", "rm -rf ./temp_build");
 
     expect(result.decision).toBe("deny");
     expect(result.matchedRule?.id).toBe("deny-destructive-commands");
@@ -226,7 +227,8 @@ describe("PolicyEntity evaluation", () => {
       preset: "safety",
     });
 
-    const result = entity.evaluate("Bash", "command", "rm -rf /");
+    // Test with realistic folder path, not root
+    const result = entity.evaluate("Bash", "command", "rm -rf ./node_modules");
 
     expect(result.constraints).toContain(`policy:${entity.entityId}`);
     expect(result.constraints).toContain("decision:deny");
@@ -377,13 +379,7 @@ describe("PolicyRegistry witnessing", () => {
       preset: "safety",
     });
 
-    registry.witnessDecision(
-      entity.entityId,
-      "session-123",
-      "Read",
-      "allow",
-      true
-    );
+    registry.witnessDecision(entity.entityId, "session-123", "Read", "allow", true);
 
     const hasWitnessed = registry.getHasWitnessed(entity.entityId);
     expect(hasWitnessed).toContain("session:session-123");
