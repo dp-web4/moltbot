@@ -7,7 +7,7 @@ This guide helps you add security and audit features to your OpenClaw installati
 After installation, your AI agent will:
 
 - Keep a tamper-proof log of everything it does
-- Block dangerous commands (like `rm -rf /`)
+- Block dangerous commands (like recursive deletes)
 - Alert you when it accesses sensitive files (passwords, API keys)
 - Sign all records so you can prove what happened
 
@@ -95,7 +95,7 @@ openclaw plugins list
 # Should show: web4-governance  loaded
 
 # Test the policy
-openclaw policy test Bash "rm -rf /"
+openclaw policy test Bash "rm -rf important_folder"
 # With 'safety' preset, should show: Decision: deny
 ```
 

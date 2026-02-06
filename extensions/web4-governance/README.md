@@ -48,7 +48,7 @@ openclaw plugins install ./web4-governance.tgz
 openclaw plugins list
 # Should show: web4-governance  loaded
 
-openclaw policy test Bash "rm -rf /"
+openclaw policy test Bash "rm -rf important_folder"
 # Should show: Decision: deny
 ```
 
@@ -217,10 +217,10 @@ moltbot policy entities                  # Show policy trust graph
 ### Example: Test Policy
 
 ```bash
-$ moltbot policy test Bash "rm -rf /tmp"
+$ moltbot policy test Bash "rm -rf myproject"
 Tool:       Bash
 Category:   command
-Target:     rm -rf /tmp
+Target:     rm -rf myproject
 Decision:   deny
 Enforced:   true
 Reason:     Destructive command blocked by safety policy
