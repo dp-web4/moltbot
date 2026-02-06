@@ -76,3 +76,4 @@ USER.md
 memory/
 .agent/*.json
 !.agent/workflows/
+*.ffs_db
