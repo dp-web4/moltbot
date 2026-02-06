@@ -49,16 +49,53 @@ const SAFETY_RULES: PolicyRule[] = [
       categories: ["network"],
     },
   },
+  {
+    id: "deny-persona-write",
+    name: "Block agent persona file modifications",
+    priority: 6,
+    decision: "deny",
+    reason: "Persona file modification blocked - potential persona hijacking (soul.md, IDENTITY.md)",
+    match: {
+      categories: ["file_write"],
+      targetPatterns: [
+        "**/soul.md",
+        "**/soul_evil.md",
+        "**/SOUL.md",
+        "**/SOUL_EVIL.md",
+        "**/IDENTITY.md",
+        "**/identity.md",
+      ],
+    },
+  },
 ];
 
 const PRESETS: Record<PresetName, PresetDefinition> = {
   permissive: {
     name: "permissive",
-    description: "Pure observation — no rules, all actions allowed",
+    description: "Pure observation — minimal rules, all actions allowed",
     config: {
       defaultPolicy: "allow",
       enforce: false,
-      rules: [],
+      rules: [
+        {
+          id: "warn-persona-write",
+          name: "Warn on agent persona file modifications",
+          priority: 6,
+          decision: "warn",
+          reason: "Persona file modification flagged - potential persona hijacking (soul.md, IDENTITY.md)",
+          match: {
+            categories: ["file_write"],
+            targetPatterns: [
+              "**/soul.md",
+              "**/soul_evil.md",
+              "**/SOUL.md",
+              "**/SOUL_EVIL.md",
+              "**/IDENTITY.md",
+              "**/identity.md",
+            ],
+          },
+        },
+      ],
     },
   },
   safety: {
