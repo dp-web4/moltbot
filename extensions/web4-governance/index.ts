@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PolicyConfig, PolicyEvaluation } from "./src/policy-types.js";
 import { AuditChain, type SigningConfig } from "./src/audit.js";
+import { EventStream, EventType, Severity } from "./src/event-stream.js";
 import { PersistentRateLimiter } from "./src/persistent-rate-limiter.js";
 import { PolicyRegistry, type PolicyEntityId } from "./src/policy-entity.js";
 import { PolicyEngine } from "./src/policy.js";
@@ -83,6 +84,9 @@ const plugin = {
     // Policy entity registry (policies as first-class trust participants)
     // Policy entity registry with persistent witnessing
     const policyRegistry = new PolicyRegistry(storagePath);
+
+    // Event stream for real-time monitoring
+    const eventStream = new EventStream({ storagePath });
 
     // Resolve policy config: preset → merge with overrides
     let resolvedPolicyConfig: Partial<PolicyConfig> = {};
@@ -167,6 +171,14 @@ const plugin = {
         logger.info(
           `[web4] Session ${lct.tokenId} initialized (${auditLevel} audit, keyId:${signingKeys.keyId.slice(0, 8)}...)${policyInfo}`,
         );
+
+        // Emit session start event
+        eventStream.sessionStart(sessionId, {
+          tokenId: lct.tokenId,
+          auditLevel,
+          policyPreset: presetName,
+          signingKeyId: signingKeys.keyId,
+        });
       }
       return entry;
     }
@@ -205,6 +217,18 @@ const plugin = {
               `[web4] Session ${event.action}: ${entry.state.actionIndex} actions, ` +
                 `chain ${verification.valid ? "VALID" : "INVALID"} (${verification.recordCount} records)`,
             );
+
+            // Emit session end event
+            const startTime = new Date(entry.state.startedAt).getTime();
+            const durationMs = Date.now() - startTime;
+            eventStream.sessionEnd(entry.state.sessionId, durationMs, {
+              actionCount: entry.state.actionIndex,
+              chainValid: verification.valid,
+              recordCount: verification.recordCount,
+              toolCounts: entry.state.toolCounts,
+              categoryCounts: entry.state.categoryCounts,
+            });
+
             sessionStore.save(entry.state);
             sessions.delete(sessionKey);
           }
@@ -266,6 +290,7 @@ const plugin = {
 
       // Security alerting for sensitive targets (independent of policy rules)
       // Check all extracted targets, not just the primary one
+      const sid = ctx.sessionKey ?? ctx.agentId ?? "default";
       const credentialTargets = allTargets.filter(isCredentialTarget);
       if (credentialTargets.length > 0) {
         const targetList =
@@ -274,6 +299,14 @@ const plugin = {
             : credentialTargets.join(", ");
         logger.warn(
           `[web4-alert] CREDENTIAL ACCESS: ${event.toolName} → ${targetList} — potential credential exfiltration`,
+        );
+        // Emit audit alert event
+        eventStream.auditAlert(
+          sid,
+          event.toolName,
+          targetList,
+          "Credential file access detected - potential exfiltration",
+          "credential_access",
         );
       }
 
@@ -287,6 +320,14 @@ const plugin = {
         logger.warn(
           `[web4-alert] MEMORY WRITE: ${event.toolName} → ${targetList} — potential memory poisoning`,
         );
+        // Emit audit alert event
+        eventStream.auditAlert(
+          sid,
+          event.toolName,
+          targetList,
+          "Memory file write detected - potential memory poisoning",
+          "memory_write",
+        );
       }
 
       if (policyEngine.ruleCount === 0) return;
@@ -296,8 +337,14 @@ const plugin = {
       const { blocked, evaluation } = policyEngine.shouldBlock(event.toolName, category, target);
 
       // Stash evaluation for after_tool_call to pick up
-      const sid = ctx.sessionKey ?? ctx.agentId ?? "default";
       policyStash.set(sid, evaluation);
+
+      // Emit policy decision event
+      eventStream.policyDecision(sid, event.toolName, target, evaluation.decision, {
+        reason: evaluation.reason,
+        ruleId: evaluation.matchedRule?.id,
+        category,
+      });
 
       if (evaluation.decision === "warn") {
         logger.warn(

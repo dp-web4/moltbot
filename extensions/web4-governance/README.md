@@ -97,6 +97,7 @@ That's it! The plugin will now:
 | **Session Identity**   | Soft LCT (Linked Context Token) for session tracking                       |
 | **Ed25519 Signatures** | Cryptographic signing of audit records                                     |
 | **SQLite Persistence** | Rate limits survive process restarts                                       |
+| **Event Stream**       | JSONL stream for real-time monitoring by external tools                    |
 
 ### Security Features
 
@@ -239,8 +240,75 @@ Rule:       deny-destructive-commands (priority 1)
 │   └── <sessionId>.json       # Session state + signing keys
 ├── data/
 │   └── rate-limits.db         # SQLite persistent rate limits
+├── events.jsonl               # Real-time event stream (tail -f this!)
 └── witnesses.jsonl            # Policy witnessing graph
 ```
+
+## Event Stream (Real-Time Monitoring)
+
+The plugin emits events to a JSONL stream that external tools can consume for monitoring, alerting, and analytics.
+
+**Stream Location:** `~/.moltbot/extensions/web4-governance/events.jsonl`
+
+### Quick Start
+
+```bash
+# Real-time monitoring
+tail -f ~/.moltbot/extensions/web4-governance/events.jsonl | jq .
+
+# Filter alerts only
+tail -f ~/.moltbot/extensions/web4-governance/events.jsonl | jq -c 'select(.severity == "alert")'
+
+# Filter policy decisions
+grep '"type":"policy_decision"' ~/.moltbot/extensions/web4-governance/events.jsonl | jq .
+```
+
+### Event Types
+
+| Type                  | Severity | Description                                          |
+| --------------------- | -------- | ---------------------------------------------------- |
+| `session_start`       | info     | New session initialized                              |
+| `session_end`         | info     | Session ended with stats                             |
+| `policy_decision`     | varies   | Policy evaluated (info=allow, warn=warn, alert=deny) |
+| `audit_alert`         | alert    | Credential access or memory write detected           |
+| `rate_limit_exceeded` | alert    | Rate limit exceeded                                  |
+| `trust_update`        | info     | Agent trust level changed                            |
+
+### Example Events
+
+**Policy Deny:**
+
+```json
+{
+  "type": "policy_decision",
+  "timestamp": "2026-02-05T10:00:00Z",
+  "severity": "alert",
+  "sessionId": "sess-123",
+  "tool": "Bash",
+  "target": "rm -rf /",
+  "decision": "deny",
+  "reason": "Destructive command blocked by safety preset",
+  "ruleId": "deny-destructive-commands",
+  "category": "command"
+}
+```
+
+**Credential Access Alert:**
+
+```json
+{
+  "type": "audit_alert",
+  "timestamp": "2026-02-05T10:01:00Z",
+  "severity": "alert",
+  "sessionId": "sess-123",
+  "tool": "Read",
+  "target": "/home/user/.aws/credentials",
+  "reason": "Credential file access detected - potential exfiltration",
+  "category": "credential_access"
+}
+```
+
+For complete API documentation, see **[EVENT_STREAM_API.md](./EVENT_STREAM_API.md)**.
 
 ## Architecture
 
