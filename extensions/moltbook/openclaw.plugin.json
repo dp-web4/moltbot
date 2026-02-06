@@ -1,0 +1,30 @@
+{
+  "id": "moltbook",
+  "name": "Moltbook",
+  "description": "Moltbook social network integration with heartbeat and auto-response",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiKey": {
+        "type": "string",
+        "description": "Moltbook API key (or use ~/.config/moltbook/credentials.json)"
+      },
+      "agentName": {
+        "type": "string",
+        "description": "Agent name on Moltbook"
+      },
+      "heartbeatIntervalMs": {
+        "type": "number",
+        "default": 300000,
+        "description": "Heartbeat check interval in ms (default 5 minutes)"
+      },
+      "autoRespond": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically respond to mentions and replies"
+      }
+    }
+  }
+}

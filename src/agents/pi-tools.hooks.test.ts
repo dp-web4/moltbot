@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { wrapToolWithHooks, type ToolHookContext } from "./pi-tools.hooks.js";
 import type { AnyAgentTool } from "./pi-tools.types.js";
+import { wrapToolWithHooks, type ToolHookContext } from "./pi-tools.hooks.js";
 
 // Mock the global hook runner
 const mockRunBeforeToolCall = vi.fn();
@@ -57,7 +57,7 @@ describe("wrapToolWithHooks", () => {
     const tool = createMockTool("read", executeFn);
     const wrapped = wrapToolWithHooks(tool, ctx);
 
-    const result = await wrapped.execute!(
+    const result = await wrapped.execute(
       "call-1",
       { path: "/foo" },
       undefined as any,
@@ -81,7 +81,7 @@ describe("wrapToolWithHooks", () => {
 
     const tool = createMockTool("exec", executeFn);
     const wrapped = wrapToolWithHooks(tool, ctx);
-    await wrapped.execute!("call-1", {}, undefined as any, undefined as any);
+    await wrapped.execute("call-1", {}, undefined as any, undefined as any);
 
     expect(callOrder).toEqual(["before", "execute"]);
     expect(mockRunBeforeToolCall).toHaveBeenCalledWith(
@@ -97,7 +97,7 @@ describe("wrapToolWithHooks", () => {
 
     const tool = createMockTool("exec", executeFn);
     const wrapped = wrapToolWithHooks(tool, ctx);
-    const result = await wrapped.execute!("call-1", {}, undefined as any, undefined as any);
+    const result = await wrapped.execute("call-1", {}, undefined as any, undefined as any);
 
     expect(result).toEqual({
       content: [{ type: "text", text: "[blocked] Not allowed" }],
@@ -112,7 +112,7 @@ describe("wrapToolWithHooks", () => {
 
     const tool = createMockTool("exec", vi.fn());
     const wrapped = wrapToolWithHooks(tool, ctx);
-    const result = await wrapped.execute!("call-1", {}, undefined as any, undefined as any);
+    const result = await wrapped.execute("call-1", {}, undefined as any, undefined as any);
 
     expect(result).toEqual({
       content: [{ type: "text", text: "[blocked] Blocked by plugin hook" }],
@@ -127,7 +127,7 @@ describe("wrapToolWithHooks", () => {
 
     const tool = createMockTool("read", executeFn);
     const wrapped = wrapToolWithHooks(tool, ctx);
-    await wrapped.execute!("call-1", { path: "/original" }, undefined as any, undefined as any);
+    await wrapped.execute("call-1", { path: "/original" }, undefined as any, undefined as any);
 
     expect(executeFn).toHaveBeenCalledWith("call-1", { path: "/modified" }, undefined, undefined);
   });
@@ -138,7 +138,7 @@ describe("wrapToolWithHooks", () => {
 
     const tool = createMockTool("read", executeFn);
     const wrapped = wrapToolWithHooks(tool, ctx);
-    await wrapped.execute!("call-1", { path: "/foo" }, undefined as any, undefined as any);
+    await wrapped.execute("call-1", { path: "/foo" }, undefined as any, undefined as any);
 
     // Allow microtask for fire-and-forget
     await new Promise((r) => setTimeout(r, 10));
@@ -162,9 +162,9 @@ describe("wrapToolWithHooks", () => {
     const tool = createMockTool("exec", executeFn);
     const wrapped = wrapToolWithHooks(tool, ctx);
 
-    await expect(
-      wrapped.execute!("call-1", {}, undefined as any, undefined as any),
-    ).rejects.toThrow("boom");
+    await expect(wrapped.execute("call-1", {}, undefined as any, undefined as any)).rejects.toThrow(
+      "boom",
+    );
 
     // Allow microtask for fire-and-forget
     await new Promise((r) => setTimeout(r, 10));
@@ -198,7 +198,7 @@ describe("wrapToolWithHooks", () => {
 
     const tool = createMockTool("write", executeFn);
     const wrapped = wrapToolWithHooks(tool, ctx);
-    await wrapped.execute!("call-1", {}, undefined as any, undefined as any);
+    await wrapped.execute("call-1", {}, undefined as any, undefined as any);
 
     // Allow microtask for fire-and-forget
     await new Promise((r) => setTimeout(r, 10));
@@ -215,7 +215,7 @@ describe("wrapToolWithHooks", () => {
     const wrapped = wrapToolWithHooks(tool, ctx);
 
     // Should not throw despite hook error
-    const result = await wrapped.execute!("call-1", {}, undefined as any, undefined as any);
+    const result = await wrapped.execute("call-1", {}, undefined as any, undefined as any);
     expect(result).toBe("ok");
   });
 
@@ -226,7 +226,7 @@ describe("wrapToolWithHooks", () => {
 
     const tool = createMockTool("read", executeFn);
     const wrapped = wrapToolWithHooks(tool, {});
-    await wrapped.execute!("call-1", {}, undefined as any, undefined as any);
+    await wrapped.execute("call-1", {}, undefined as any, undefined as any);
 
     expect(mockRunBeforeToolCall).toHaveBeenCalledWith(
       { toolName: "read", params: {} },

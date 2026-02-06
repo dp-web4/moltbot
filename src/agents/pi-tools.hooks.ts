@@ -5,8 +5,8 @@
  * Follows the same wrapping pattern as pi-tools.abort.ts.
  */
 
-import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import type { AnyAgentTool } from "./pi-tools.types.js";
+import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 
 export type ToolHookContext = {
   agentId?: string;
@@ -22,7 +22,9 @@ export type ToolHookContext = {
  */
 export function wrapToolWithHooks(tool: AnyAgentTool, ctx: ToolHookContext): AnyAgentTool {
   const originalExecute = tool.execute;
-  if (!originalExecute) return tool;
+  if (!originalExecute) {
+    return tool;
+  }
 
   return {
     ...tool,

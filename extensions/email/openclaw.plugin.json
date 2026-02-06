@@ -1,0 +1,71 @@
+{
+  "id": "email",
+  "name": "@openclaw/email",
+  "description": "OpenClaw Email channel plugin for IMAP/SMTP communication",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "accounts": {
+        "type": "array",
+        "description": "Email accounts to connect",
+        "items": {
+          "type": "object",
+          "required": ["id", "email"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Unique account identifier"
+            },
+            "email": {
+              "type": "string",
+              "description": "Email address (or env var reference like ${FOURTRON_EMAIL})"
+            },
+            "password": {
+              "type": "string",
+              "description": "Password (or env var reference like ${FOURTRON_PASSWORD})"
+            },
+            "imap": {
+              "type": "object",
+              "properties": {
+                "host": { "type": "string", "default": "imap.gmail.com" },
+                "port": { "type": "number", "default": 993 },
+                "secure": { "type": "boolean", "default": true }
+              }
+            },
+            "smtp": {
+              "type": "object",
+              "properties": {
+                "host": { "type": "string", "default": "smtp.gmail.com" },
+                "port": { "type": "number", "default": 587 },
+                "secure": { "type": "boolean", "default": false }
+              }
+            },
+            "pollInterval": {
+              "type": "number",
+              "default": 60000,
+              "description": "How often to check for new emails (ms)"
+            },
+            "folders": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": ["INBOX"],
+              "description": "IMAP folders to monitor"
+            }
+          }
+        }
+      },
+      "autoReply": {
+        "type": "boolean",
+        "default": true,
+        "description": "Whether to automatically reply to incoming emails"
+      },
+      "replyPrefix": {
+        "type": "string",
+        "default": "Re: ",
+        "description": "Prefix for reply subjects"
+      }
+    }
+  }
+}
