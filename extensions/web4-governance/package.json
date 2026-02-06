@@ -6,7 +6,7 @@
   "optionalDependencies": {
     "better-sqlite3": "^11.0.0"
   },
-  "moltbot": {
+  "openclaw": {
     "extensions": [
       "./index.ts"
     ]

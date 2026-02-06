@@ -15,48 +15,44 @@ AI agents executing tools (file access, shell commands, network requests) need a
 
 ## Installation
 
-### One-Line Install (Recommended)
-
-If you have OpenClaw installed, run:
+### Quick Install
 
 ```bash
-openclaw plugins install @moltbot/web4-governance
+# Clone the repo
+git clone https://github.com/dp-web4/moltbot.git
+cd moltbot
+
+# Install the plugin
+openclaw plugins install ./extensions/web4-governance
+
+# Set security level (recommended: safety)
+openclaw config set plugins.web4-governance.policy.preset safety
+
+# Restart to activate
+openclaw gateway restart
 ```
 
-Then enable it with the safety preset:
+### Alternative: Download Release
 
 ```bash
-openclaw plugins enable web4-governance
+# Download the latest release
+curl -L https://github.com/dp-web4/moltbot/releases/latest/download/web4-governance.tgz -o web4-governance.tgz
+
+# Install
+openclaw plugins install ./web4-governance.tgz
 ```
-
-### Manual Install
-
-1. Copy the `web4-governance` folder to your OpenClaw extensions directory:
-
-   ```bash
-   cp -r extensions/web4-governance ~/.openclaw/plugins/
-   ```
-
-2. Add to your config (`~/.openclaw/config.json`):
-
-   ```json
-   {
-     "plugins": {
-       "entries": {
-         "web4-governance": { "enabled": true }
-       }
-     }
-   }
-   ```
-
-3. Restart OpenClaw/moltbot.
 
 ### Verify Installation
 
 ```bash
 openclaw plugins list
 # Should show: web4-governance  loaded
+
+openclaw policy test Bash "rm -rf /"
+# Should show: Decision: deny
 ```
+
+For detailed instructions, see [INSTALL.md](./INSTALL.md).
 
 ## Quick Start
 
