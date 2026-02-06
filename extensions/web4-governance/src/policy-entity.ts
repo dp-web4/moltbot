@@ -9,9 +9,12 @@
  * - Sessions witness operating under a policy
  * - Policy witnesses agent decisions (allow/deny)
  * - R6 records reference the policyHash in effect
+ * - Witnessing relationships are persisted to JSONL for durability
  */
 
 import { createHash } from "crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   PolicyConfig,
   PolicyRule,
@@ -20,10 +23,22 @@ import type {
   PolicyEvaluation,
 } from "./policy-types.js";
 import type { ToolCategory } from "./r6.js";
-import { resolvePreset } from "./presets.js";
 import type { RateLimiter } from "./rate-limiter.js";
+import { resolvePreset } from "./presets.js";
 
 export type PolicyEntityId = `policy:${string}:${string}:${string}`;
+
+/** Record of a witnessing relationship (persisted to JSONL) */
+export type WitnessRecord = {
+  type: "session_witness" | "decision_witness";
+  entity: string;
+  witness: string;
+  timestamp: string;
+  /** For decision witnesses: the tool involved */
+  tool?: string;
+  /** For decision witnesses: the decision made */
+  decision?: string;
+};
 
 export type PolicyEntityData = {
   entityId: PolicyEntityId;
@@ -65,9 +80,7 @@ export class PolicyEntity {
     this.config = data.config;
 
     // Sort rules by priority (lower = evaluated first)
-    this.sortedRules = [...data.config.rules].sort(
-      (a, b) => a.priority - b.priority
-    );
+    this.sortedRules = [...data.config.rules].sort((a, b) => a.priority - b.priority);
   }
 
   /**
@@ -77,7 +90,7 @@ export class PolicyEntity {
     toolName: string,
     category: string,
     target?: string,
-    rateLimiter?: RateLimiter
+    rateLimiter?: RateLimiter,
   ): PolicyEvaluation {
     for (const rule of this.sortedRules) {
       if (this.matchesRule(toolName, category, target, rule.match)) {
@@ -87,7 +100,7 @@ export class PolicyEntity {
           const result = rateLimiter.check(
             key,
             rule.match.rateLimit.maxCount,
-            rule.match.rateLimit.windowMs
+            rule.match.rateLimit.windowMs,
           );
           if (result.allowed) {
             continue; // Under limit, rule doesn't fire
@@ -100,11 +113,7 @@ export class PolicyEntity {
           matchedRule: rule,
           enforced,
           reason: rule.reason ?? `Matched rule: ${rule.name}`,
-          constraints: [
-            `policy:${this.entityId}`,
-            `decision:${rule.decision}`,
-            `rule:${rule.id}`,
-          ],
+          constraints: [`policy:${this.entityId}`, `decision:${rule.decision}`, `rule:${rule.id}`],
         };
       }
     }
@@ -127,7 +136,7 @@ export class PolicyEntity {
     toolName: string,
     category: string,
     target: string | undefined,
-    match: PolicyMatch
+    match: PolicyMatch,
   ): boolean {
     // Tool match
     if (match.tools && !match.tools.includes(toolName)) {
@@ -171,11 +180,7 @@ export class PolicyEntity {
     return true;
   }
 
-  private rateLimitKey(
-    rule: PolicyRule,
-    toolName: string,
-    category: string
-  ): string {
+  private rateLimitKey(rule: PolicyRule, toolName: string, category: string): string {
     if (rule.match.tools) {
       return `ratelimit:${rule.id}:tool:${toolName}`;
     }
@@ -203,6 +208,8 @@ export class PolicyEntity {
  *
  * Policies are registered once and become immutable. Changing a policy
  * creates a new entity with a new hash.
+ *
+ * Witnessing relationships are persisted to JSONL for durability across restarts.
  */
 export class PolicyRegistry {
   /** In-memory cache of loaded policies */
@@ -213,6 +220,76 @@ export class PolicyRegistry {
 
   /** Witnessing records: entity -> set of entities witnessed */
   private hasWitnessed = new Map<string, Set<string>>();
+
+  /** Storage path for persistence (optional) */
+  private storagePath?: string;
+
+  constructor(storagePath?: string) {
+    this.storagePath = storagePath;
+    if (storagePath) {
+      this.loadWitnessRecords();
+    }
+  }
+
+  private get witnessFilePath(): string | undefined {
+    if (!this.storagePath) return undefined;
+    return join(this.storagePath, "witnesses.jsonl");
+  }
+
+  /** Load existing witness records from disk */
+  private loadWitnessRecords(): void {
+    const filePath = this.witnessFilePath;
+    if (!filePath || !existsSync(filePath)) return;
+
+    try {
+      const content = readFileSync(filePath, "utf-8").trim();
+      if (!content) return;
+
+      for (const line of content.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const record: WitnessRecord = JSON.parse(line);
+          this.applyWitnessRecord(record);
+        } catch {
+          // Skip malformed lines
+        }
+      }
+    } catch {
+      // File doesn't exist or can't be read, start fresh
+    }
+  }
+
+  /** Apply a witness record to in-memory state */
+  private applyWitnessRecord(record: WitnessRecord): void {
+    // Entity is witnessed by witness
+    if (!this.witnessedBy.has(record.entity)) {
+      this.witnessedBy.set(record.entity, new Set());
+    }
+    this.witnessedBy.get(record.entity)!.add(record.witness);
+
+    // Witness has witnessed entity
+    if (!this.hasWitnessed.has(record.witness)) {
+      this.hasWitnessed.set(record.witness, new Set());
+    }
+    this.hasWitnessed.get(record.witness)!.add(record.entity);
+  }
+
+  /** Persist a witness record to disk */
+  private persistWitnessRecord(record: WitnessRecord): void {
+    const filePath = this.witnessFilePath;
+    if (!filePath) return;
+
+    try {
+      // Ensure directory exists
+      const dir = join(this.storagePath!, "");
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+      appendFileSync(filePath, JSON.stringify(record) + "\n");
+    } catch {
+      // Persistence failure is non-fatal
+    }
+  }
 
   /**
    * Register a policy and create its entity.
@@ -244,14 +321,16 @@ export class PolicyRegistry {
     }
 
     // Generate version if not provided
-    const versionStr = version ?? new Date().toISOString().replace(/[-:T.]/g, "").slice(0, 14);
+    const versionStr =
+      version ??
+      new Date()
+        .toISOString()
+        .replace(/[-:T.]/g, "")
+        .slice(0, 14);
 
     // Compute content hash
     const contentStr = JSON.stringify(config, Object.keys(config).sort());
-    const contentHash = createHash("sha256")
-      .update(contentStr)
-      .digest("hex")
-      .slice(0, 16);
+    const contentHash = createHash("sha256").update(contentStr).digest("hex").slice(0, 16);
 
     // Build entity ID
     const entityId: PolicyEntityId = `policy:${name}:${versionStr}:${contentHash}`;
@@ -314,6 +393,9 @@ export class PolicyRegistry {
   witnessSession(policyEntityId: PolicyEntityId, sessionId: string): void {
     const sessionEntity = `session:${sessionId}`;
 
+    // Check if already witnessed (avoid duplicate persistence)
+    const alreadyWitnessed = this.witnessedBy.get(policyEntityId)?.has(sessionEntity);
+
     // Policy is witnessed by session
     if (!this.witnessedBy.has(policyEntityId)) {
       this.witnessedBy.set(policyEntityId, new Set());
@@ -325,6 +407,17 @@ export class PolicyRegistry {
       this.hasWitnessed.set(sessionEntity, new Set());
     }
     this.hasWitnessed.get(sessionEntity)!.add(policyEntityId);
+
+    // Persist if new
+    if (!alreadyWitnessed) {
+      const record: WitnessRecord = {
+        type: "session_witness",
+        entity: policyEntityId,
+        witness: sessionEntity,
+        timestamp: new Date().toISOString(),
+      };
+      this.persistWitnessRecord(record);
+    }
   }
 
   /**
@@ -333,17 +426,33 @@ export class PolicyRegistry {
   witnessDecision(
     policyEntityId: PolicyEntityId,
     sessionId: string,
-    _toolName: string,
-    _decision: PolicyDecision,
-    _success: boolean
+    toolName: string,
+    decision: PolicyDecision,
+    _success: boolean,
   ): void {
     const sessionEntity = `session:${sessionId}`;
+
+    // Check if already witnessed (avoid duplicate persistence)
+    const alreadyWitnessed = this.hasWitnessed.get(policyEntityId)?.has(sessionEntity);
 
     // Policy has witnessed the session's action
     if (!this.hasWitnessed.has(policyEntityId)) {
       this.hasWitnessed.set(policyEntityId, new Set());
     }
     this.hasWitnessed.get(policyEntityId)!.add(sessionEntity);
+
+    // Persist if new (first decision for this session under this policy)
+    if (!alreadyWitnessed) {
+      const record: WitnessRecord = {
+        type: "decision_witness",
+        entity: sessionEntity,
+        witness: policyEntityId,
+        timestamp: new Date().toISOString(),
+        tool: toolName,
+        decision,
+      };
+      this.persistWitnessRecord(record);
+    }
   }
 
   /**

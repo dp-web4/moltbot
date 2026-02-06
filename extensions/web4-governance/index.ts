@@ -81,7 +81,8 @@ const plugin = {
     }
 
     // Policy entity registry (policies as first-class trust participants)
-    const policyRegistry = new PolicyRegistry();
+    // Policy entity registry with persistent witnessing
+    const policyRegistry = new PolicyRegistry(storagePath);
 
     // Resolve policy config: preset → merge with overrides
     let resolvedPolicyConfig: Partial<PolicyConfig> = {};
