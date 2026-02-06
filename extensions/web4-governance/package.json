@@ -1,9 +1,14 @@
 {
   "name": "@moltbot/web4-governance",
   "version": "2026.1.27-beta.1",
-  "type": "module",
   "description": "Web4 governance with R6 workflow, audit trails, and trust tensors",
+  "type": "module",
+  "optionalDependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
   "moltbot": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }

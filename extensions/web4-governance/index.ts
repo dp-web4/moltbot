@@ -7,10 +7,15 @@
  */
 
 import type { MoltbotPluginApi } from "clawdbot/plugin-sdk";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { createSoftLCT } from "./src/soft-lct.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { PolicyConfig, PolicyEvaluation } from "./src/policy-types.js";
+import { AuditChain, type SigningConfig } from "./src/audit.js";
+import { PersistentRateLimiter } from "./src/persistent-rate-limiter.js";
+import { PolicyRegistry, type PolicyEntityId } from "./src/policy-entity.js";
+import { PolicyEngine } from "./src/policy.js";
+import { resolvePreset, listPresets, isPresetName } from "./src/presets.js";
 import {
   createR6Request,
   hashOutput,
@@ -20,15 +25,11 @@ import {
   isCredentialTarget,
   isMemoryTarget,
 } from "./src/r6.js";
-import { AuditChain, type SigningConfig } from "./src/audit.js";
+import { RateLimiter } from "./src/rate-limiter.js";
+import { AuditReporter } from "./src/reporter.js";
 import { SessionStore, type SessionState } from "./src/session-state.js";
 import { generateSigningKeyPair } from "./src/signing.js";
-import { PolicyEngine } from "./src/policy.js";
-import type { PolicyConfig, PolicyEvaluation } from "./src/policy-types.js";
-import { RateLimiter } from "./src/rate-limiter.js";
-import { resolvePreset, listPresets, isPresetName } from "./src/presets.js";
-import { AuditReporter } from "./src/reporter.js";
-import { PolicyRegistry, type PolicyEntityId } from "./src/policy-entity.js";
+import { createSoftLCT } from "./src/soft-lct.js";
 
 type PluginConfig = {
   auditLevel?: string;
@@ -53,7 +54,8 @@ const plugin = {
 
   register(api: MoltbotPluginApi) {
     const config = (api.pluginConfig ?? {}) as PluginConfig;
-    const storagePath = config.storagePath ?? join(homedir(), ".moltbot", "extensions", "web4-governance");
+    const storagePath =
+      config.storagePath ?? join(homedir(), ".moltbot", "extensions", "web4-governance");
     const auditLevel = config.auditLevel ?? "standard";
     const logger = api.logger;
 
@@ -61,8 +63,21 @@ const plugin = {
     const sessions = new Map<string, { state: SessionState; audit: AuditChain }>();
     const sessionStore = new SessionStore(storagePath);
 
-    // Rate limiter (memory-only, shared across all sessions)
-    const rateLimiter = new RateLimiter();
+    // Rate limiter (persistent with SQLite, falls back to memory-only)
+    let rateLimiter: RateLimiter | PersistentRateLimiter;
+    try {
+      const persistentLimiter = new PersistentRateLimiter(storagePath);
+      if (persistentLimiter.persistent) {
+        rateLimiter = persistentLimiter;
+        logger.info(`[web4] Rate limiter: SQLite persistent storage enabled`);
+      } else {
+        rateLimiter = new RateLimiter();
+        logger.info(`[web4] Rate limiter: memory-only (SQLite unavailable)`);
+      }
+    } catch {
+      rateLimiter = new RateLimiter();
+      logger.info(`[web4] Rate limiter: memory-only (SQLite init failed)`);
+    }
 
     // Policy entity registry (policies as first-class trust participants)
     const policyRegistry = new PolicyRegistry();
@@ -147,7 +162,9 @@ const plugin = {
         entry = { state, audit };
         sessions.set(sessionKey, entry);
         const policyInfo = policyEntityId ? ` [policy:${presetName}]` : "";
-        logger.info(`[web4] Session ${lct.tokenId} initialized (${auditLevel} audit, keyId:${signingKeys.keyId.slice(0, 8)}...)${policyInfo}`);
+        logger.info(
+          `[web4] Session ${lct.tokenId} initialized (${auditLevel} audit, keyId:${signingKeys.keyId.slice(0, 8)}...)${policyInfo}`,
+        );
       }
       return entry;
     }
@@ -155,69 +172,88 @@ const plugin = {
     // --- Internal Hooks (these actually fire in current moltbot) ---
 
     // Hook into agent bootstrap - fires when agent session starts
-    api.registerHook(["agent", "agent:bootstrap"], async (event) => {
-      const sessionKey = event.sessionKey || "default";
-      const entry = getOrCreateSession(sessionKey);
-      logger.info(`[web4] Governance active: ${entry.state.lct.tokenId} (session: ${sessionKey})`);
-    }, { name: "web4-agent-bootstrap", description: "Initialize Web4 governance session on agent bootstrap" });
+    api.registerHook(
+      ["agent", "agent:bootstrap"],
+      async (event) => {
+        const sessionKey = event.sessionKey || "default";
+        const entry = getOrCreateSession(sessionKey);
+        logger.info(
+          `[web4] Governance active: ${entry.state.lct.tokenId} (session: ${sessionKey})`,
+        );
+      },
+      {
+        name: "web4-agent-bootstrap",
+        description: "Initialize Web4 governance session on agent bootstrap",
+      },
+    );
 
     // Hook into session events
-    api.registerHook(["session"], async (event) => {
-      const sessionKey = event.sessionKey || "default";
-      if (event.action === "new" || event.action === "start") {
-        const entry = getOrCreateSession(sessionKey);
-        logger.info(`[web4] Session ${event.action}: ${entry.state.lct.tokenId}`);
-      } else if (event.action === "end" || event.action === "stop" || event.action === "reset") {
-        const entry = sessions.get(sessionKey);
-        if (entry) {
-          const verification = entry.audit.verify();
-          logger.info(
-            `[web4] Session ${event.action}: ${entry.state.actionIndex} actions, ` +
-              `chain ${verification.valid ? "VALID" : "INVALID"} (${verification.recordCount} records)`,
-          );
-          sessionStore.save(entry.state);
-          sessions.delete(sessionKey);
+    api.registerHook(
+      ["session"],
+      async (event) => {
+        const sessionKey = event.sessionKey || "default";
+        if (event.action === "new" || event.action === "start") {
+          const entry = getOrCreateSession(sessionKey);
+          logger.info(`[web4] Session ${event.action}: ${entry.state.lct.tokenId}`);
+        } else if (event.action === "end" || event.action === "stop" || event.action === "reset") {
+          const entry = sessions.get(sessionKey);
+          if (entry) {
+            const verification = entry.audit.verify();
+            logger.info(
+              `[web4] Session ${event.action}: ${entry.state.actionIndex} actions, ` +
+                `chain ${verification.valid ? "VALID" : "INVALID"} (${verification.recordCount} records)`,
+            );
+            sessionStore.save(entry.state);
+            sessions.delete(sessionKey);
+          }
         }
-      }
-    }, { name: "web4-session-lifecycle", description: "Track Web4 session lifecycle events" });
+      },
+      { name: "web4-session-lifecycle", description: "Track Web4 session lifecycle events" },
+    );
 
     // Hook into command events - captures all agent commands
-    api.registerHook(["command"], async (event) => {
-      const sessionKey = event.sessionKey || "default";
-      const entry = getOrCreateSession(sessionKey);
-      const { state } = entry;
+    api.registerHook(
+      ["command"],
+      async (event) => {
+        const sessionKey = event.sessionKey || "default";
+        const entry = getOrCreateSession(sessionKey);
+        const { state } = entry;
 
-      // Create R6 request for the command
-      const toolName = String(event.context.command ?? event.action ?? "unknown");
-      const params = (event.context ?? {}) as Record<string, unknown>;
+        // Create R6 request for the command
+        const toolName = String(event.context.command ?? event.action ?? "unknown");
+        const params = (event.context ?? {}) as Record<string, unknown>;
 
-      const r6 = createR6Request(
-        state.sessionId,
-        undefined,
-        toolName,
-        params,
-        state.actionIndex,
-        state.lastR6Id,
-        auditLevel,
-        state.policyEntityId,
-      );
+        const r6 = createR6Request(
+          state.sessionId,
+          undefined,
+          toolName,
+          params,
+          state.actionIndex,
+          state.lastR6Id,
+          auditLevel,
+          state.policyEntityId,
+        );
 
-      // Record in audit chain with success (commands that reach hooks succeeded)
-      const result = {
-        status: "success" as const,
-        outputHash: hashOutput(event.context),
-      };
-      r6.result = result;
-      entry.audit.record(r6, result);
+        // Record in audit chain with success (commands that reach hooks succeeded)
+        const result = {
+          status: "success" as const,
+          outputHash: hashOutput(event.context),
+        };
+        r6.result = result;
+        entry.audit.record(r6, result);
 
-      // Update session state
-      const category = classifyTool(toolName);
-      sessionStore.incrementAction(state, toolName, category, r6.id);
+        // Update session state
+        const category = classifyTool(toolName);
+        sessionStore.incrementAction(state, toolName, category, r6.id);
 
-      if (auditLevel === "verbose") {
-        logger.info(`[web4] R6 ${r6.id}: ${toolName} [${category}] → ${r6.request.target ?? "(no target)"}`);
-      }
-    }, { name: "web4-command-audit", description: "Record R6 audit entries for agent commands" });
+        if (auditLevel === "verbose") {
+          logger.info(
+            `[web4] R6 ${r6.id}: ${toolName} [${category}] → ${r6.request.target ?? "(no target)"}`,
+          );
+        }
+      },
+      { name: "web4-command-audit", description: "Record R6 audit entries for agent commands" },
+    );
 
     // --- Typed Tool Hooks (wired via pi-tools.hooks.ts) ---
 
@@ -302,7 +338,7 @@ const plugin = {
           entry.state.sessionId,
           event.toolName,
           decision,
-          success
+          success,
         );
       }
 
@@ -314,7 +350,12 @@ const plugin = {
       };
       r6.result = result;
       entry.audit.record(r6, result);
-      sessionStore.incrementAction(entry.state, event.toolName, classifyTool(event.toolName), r6.id);
+      sessionStore.incrementAction(
+        entry.state,
+        event.toolName,
+        classifyTool(event.toolName),
+        r6.id,
+      );
 
       // Record rate limit action after successful tool execution
       if (policyEngine.ruleCount > 0) {
@@ -332,7 +373,9 @@ const plugin = {
       }
 
       if (auditLevel === "verbose") {
-        logger.info(`[web4] R6 ${r6.id}: ${event.toolName} [${classifyTool(event.toolName)}] (${event.durationMs ?? 0}ms)`);
+        logger.info(
+          `[web4] R6 ${r6.id}: ${event.toolName} [${classifyTool(event.toolName)}] (${event.durationMs ?? 0}ms)`,
+        );
       }
     });
 
@@ -369,14 +412,17 @@ const plugin = {
               const chain = new AuditChain(storagePath, sessionId);
               // Try to load public key from session state for signature verification
               const sessionState = sessionStore.load(sessionId);
-              const publicKeys = sessionState?.signingPublicKeyHex && sessionState?.signingKeyId
-                ? new Map([[sessionState.signingKeyId, sessionState.signingPublicKeyHex]])
-                : undefined;
+              const publicKeys =
+                sessionState?.signingPublicKeyHex && sessionState?.signingKeyId
+                  ? new Map([[sessionState.signingKeyId, sessionState.signingPublicKeyHex]])
+                  : undefined;
               const result = chain.verify(publicKeys);
               logger.info(`Chain valid: ${result.valid}`);
               logger.info(`Records: ${result.recordCount}`);
               const sig = result.signatureStats;
-              logger.info(`Signatures: ${sig.signed} signed, ${sig.verified} verified, ${sig.unverified} unverified, ${sig.invalid} invalid`);
+              logger.info(
+                `Signatures: ${sig.signed} signed, ${sig.verified} verified, ${sig.unverified} unverified, ${sig.invalid} invalid`,
+              );
               if (result.errors.length > 0) {
                 logger.info("Errors:");
                 for (const e of result.errors) logger.info(`  - ${e}`);
@@ -384,12 +430,15 @@ const plugin = {
             } else {
               for (const [, entry] of sessions) {
                 // Use session's public key for verification
-                const publicKeys = entry.state.signingPublicKeyHex && entry.state.signingKeyId
-                  ? new Map([[entry.state.signingKeyId, entry.state.signingPublicKeyHex]])
-                  : undefined;
+                const publicKeys =
+                  entry.state.signingPublicKeyHex && entry.state.signingKeyId
+                    ? new Map([[entry.state.signingKeyId, entry.state.signingPublicKeyHex]])
+                    : undefined;
                 const result = entry.audit.verify(publicKeys);
                 const sig = result.signatureStats;
-                logger.info(`${entry.state.sessionId}: ${result.valid ? "VALID" : "INVALID"} (${result.recordCount} records, ${sig.verified}/${sig.signed} verified)`);
+                logger.info(
+                  `${entry.state.sessionId}: ${result.valid ? "VALID" : "INVALID"} (${result.recordCount} records, ${sig.verified}/${sig.signed} verified)`,
+                );
               }
             }
           });
@@ -436,7 +485,9 @@ const plugin = {
                 for (const r of results) {
                   const dur = r.result.durationMs !== undefined ? ` ${r.result.durationMs}ms` : "";
                   const err = r.result.errorMessage ? ` — ${r.result.errorMessage}` : "";
-                  logger.info(`  ${r.timestamp} ${r.tool} [${r.category}] → ${r.target ?? "?"} [${r.result.status}]${dur}${err}`);
+                  logger.info(
+                    `  ${r.timestamp} ${r.tool} [${r.category}] → ${r.target ?? "?"} [${r.result.status}]${dur}${err}`,
+                  );
                 }
               }
             }
@@ -511,7 +562,9 @@ const plugin = {
                 criteria.push(`targets(${kind})=[${match.targetPatterns.join(", ")}]`);
               }
               if (match.rateLimit) {
-                criteria.push(`rateLimit(max=${match.rateLimit.maxCount}, window=${match.rateLimit.windowMs}ms)`);
+                criteria.push(
+                  `rateLimit(max=${match.rateLimit.maxCount}, window=${match.rateLimit.windowMs}ms)`,
+                );
               }
               logger.info(`  [${rule.priority}] ${rule.id} → ${rule.decision}`);
               logger.info(`       ${rule.name}`);
@@ -519,7 +572,9 @@ const plugin = {
               if (rule.reason) logger.info(`       reason: ${rule.reason}`);
               logger.info();
             }
-            logger.info(`Default: ${policyEngine.defaultDecision} | Enforce: ${policyEngine.isEnforcing}`);
+            logger.info(
+              `Default: ${policyEngine.defaultDecision} | Enforce: ${policyEngine.isEnforcing}`,
+            );
           });
 
         policy
@@ -537,7 +592,9 @@ const plugin = {
             logger.info(`Enforced:   ${evaluation.enforced}`);
             logger.info(`Reason:     ${evaluation.reason}`);
             if (evaluation.matchedRule) {
-              logger.info(`Rule:       ${evaluation.matchedRule.id} (priority ${evaluation.matchedRule.priority})`);
+              logger.info(
+                `Rule:       ${evaluation.matchedRule.id} (priority ${evaluation.matchedRule.priority})`,
+              );
             }
             logger.info(`Constraints: ${evaluation.constraints.join(", ")}`);
           });
@@ -553,7 +610,9 @@ const plugin = {
               const ruleCount = p.config.rules.length;
               logger.info(`  ${p.name}`);
               logger.info(`    ${p.description}`);
-              logger.info(`    default: ${p.config.defaultPolicy} | enforce: ${p.config.enforce} | rules: ${ruleCount}`);
+              logger.info(
+                `    default: ${p.config.defaultPolicy} | enforce: ${p.config.enforce} | rules: ${ruleCount}`,
+              );
               logger.info();
             }
             logger.info(`Usage: { "policy": { "preset": "<name>" } }`);
@@ -577,7 +636,9 @@ const plugin = {
               logger.info(`    created: ${e.createdAt}`);
               const witnessedBy = policyRegistry.getWitnessedBy(e.entityId);
               const hasWitnessed = policyRegistry.getHasWitnessed(e.entityId);
-              logger.info(`    witnessed by: ${witnessedBy.length} | has witnessed: ${hasWitnessed.length}`);
+              logger.info(
+                `    witnessed by: ${witnessedBy.length} | has witnessed: ${hasWitnessed.length}`,
+              );
               logger.info();
             }
           });
