@@ -1,42 +1,76 @@
 # web4-governance
 
-R6 workflow formalism, audit trails, session identity, and policy-based pre-action gating for moltbot agent sessions.
+**Security-first governance for AI agent tool execution.** Audit trails, policy gating, credential protection, and cryptographic non-repudiation for moltbot agent sessions.
 
-## Overview
+## Why This Exists
 
-This plugin observes and optionally gates every tool call an agent makes:
+AI agents executing tools (file access, shell commands, network requests) need accountability and safety guardrails:
 
-- **R6 audit records** capture intent, context, and outcome for each action
-- **Hash-linked chain** provides tamper-evident provenance (SHA-256 chain)
-- **Session identity** via software-bound Linked Context Tokens (Soft LCT)
-- **Policy engine** evaluates rules before tool execution, with allow/deny/warn decisions
+- **Audit everything**: Every tool call is recorded in a tamper-evident hash chain
+- **Block dangerous operations**: Policy rules can deny destructive commands, secret file access
+- **Detect credential exfiltration**: Automatic alerting when agents access `.env`, API keys, SSH keys
+- **Prevent memory poisoning**: Warn/block writes to agent memory files
+- **Cryptographic proof**: Ed25519 signatures on audit records for non-repudiation
+- **Time-based policies**: Restrict operations to business hours
 
-## Installation
+## Quick Start
 
-The plugin is bundled with moltbot. Enable it in your moltbot config:
+Enable in your moltbot config:
 
 ```json
 {
   "plugins": {
-    "web4-governance": {}
+    "web4-governance": {
+      "policy": { "preset": "safety" }
+    }
   }
 }
 ```
 
-## Configuration
+Available presets: `permissive`, `safety` (recommended), `strict`, `audit-only`
 
-All fields are optional. Defaults shown below.
+## Features
+
+### Core Capabilities
+
+| Feature                | Description                                                                |
+| ---------------------- | -------------------------------------------------------------------------- |
+| **R6 Audit Chain**     | Every tool call becomes a structured R6 record with hash-linked provenance |
+| **Policy Engine**      | Pre-execution rules with allow/deny/warn decisions                         |
+| **Session Identity**   | Soft LCT (Linked Context Token) for session tracking                       |
+| **Ed25519 Signatures** | Cryptographic signing of audit records                                     |
+| **SQLite Persistence** | Rate limits survive process restarts                                       |
+
+### Security Features
+
+| Feature                          | Description                                                          |
+| -------------------------------- | -------------------------------------------------------------------- |
+| **Credential Detection**         | Alerts on access to `.env`, `.aws/credentials`, SSH keys, API tokens |
+| **Memory Protection**            | Warns on writes to `MEMORY.md` and agent memory files                |
+| **Destructive Command Blocking** | Denies `rm -rf`, `mkfs.*`, and other dangerous commands              |
+| **Multi-target Extraction**      | Detects all file paths in bash commands and Task prompts             |
+| **ReDoS Protection**             | Validates regex patterns to prevent denial-of-service                |
+| **Temporal Constraints**         | Rules that only apply during certain hours/days                      |
+
+### Policy Presets
+
+| Preset       | Default | Enforce | Key Rules                                                         |
+| ------------ | ------- | ------- | ----------------------------------------------------------------- |
+| `permissive` | allow   | false   | No blocking, audit only                                           |
+| `safety`     | allow   | true    | Block destructive commands + secret files, warn on network/memory |
+| `strict`     | deny    | true    | Default deny, explicit allowlist required                         |
+| `audit-only` | allow   | false   | Record everything, block nothing                                  |
+
+## Configuration
 
 ```json
 {
   "plugins": {
     "web4-governance": {
       "auditLevel": "standard",
-      "showR6Status": true,
       "storagePath": "~/.moltbot/extensions/web4-governance/",
       "policy": {
-        "defaultPolicy": "allow",
-        "enforce": true,
+        "preset": "safety",
         "rules": []
       }
     }
@@ -44,221 +78,88 @@ All fields are optional. Defaults shown below.
 }
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `auditLevel` | `"minimal" \| "standard" \| "verbose"` | `"standard"` | Controls audit detail level. `verbose` logs every R6 to the console. |
-| `showR6Status` | `boolean` | `true` | Show R6 chain status in session output. |
-| `storagePath` | `string` | `~/.moltbot/extensions/web4-governance/` | Directory for audit logs and session state. |
-| `policy` | `object` | see below | Policy engine configuration. |
+| Field            | Type                             | Default          | Description                     |
+| ---------------- | -------------------------------- | ---------------- | ------------------------------- |
+| `auditLevel`     | `minimal \| standard \| verbose` | `standard`       | Audit detail level              |
+| `storagePath`    | `string`                         | `~/.moltbot/...` | Storage directory               |
+| `policy.preset`  | `string`                         | `safety`         | Base policy preset              |
+| `policy.rules`   | `PolicyRule[]`                   | `[]`             | Additional custom rules         |
+| `policy.enforce` | `boolean`                        | `true`           | Block on deny (false = dry-run) |
 
-## Policy Engine
+## Policy Rules
 
-The policy engine evaluates every tool call against a configurable set of rules before execution. Rules are matched in priority order (ascending); first match wins.
-
-### Policy Configuration
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `defaultPolicy` | `"allow" \| "deny" \| "warn"` | `"allow"` | Decision when no rule matches. |
-| `enforce` | `boolean` | `true` | When `false`, deny decisions are logged but not enforced (dry-run mode). |
-| `rules` | `PolicyRule[]` | `[]` | Ordered list of policy rules. |
+Rules are evaluated in priority order (ascending). First match wins.
 
 ### Rule Schema
 
 ```json
 {
-  "id": "deny-destructive-commands",
-  "name": "Block destructive shell commands",
-  "priority": 1,
+  "id": "deny-secrets",
+  "name": "Block reading secret files",
+  "priority": 5,
   "decision": "deny",
-  "reason": "Destructive command blocked",
+  "reason": "Secret file access denied",
   "match": {
-    "tools": ["Bash"],
-    "targetPatterns": ["rm\\s+-rf", "mkfs\\."],
-    "targetPatternsAreRegex": true
-  }
-}
-```
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `id` | yes | Unique rule identifier, used in audit constraints. |
-| `name` | yes | Human-readable rule name. |
-| `priority` | yes | Lower number = evaluated first. First match wins. |
-| `decision` | yes | `"allow"`, `"deny"`, or `"warn"`. |
-| `reason` | no | Reason string recorded in audit and shown on block. |
-| `match` | yes | Match criteria (all specified fields are AND'd). |
-
-### Match Criteria
-
-All specified criteria within a rule must match (AND logic). Omitted criteria are ignored.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `tools` | `string[]` | Tool names: `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Task`, `NotebookEdit`, `TodoWrite` |
-| `categories` | `string[]` | Tool categories: `file_read`, `file_write`, `command`, `network`, `delegation`, `state`, `mcp`, `unknown` |
-| `targetPatterns` | `string[]` | Patterns to match against the tool's target (file path, command, URL, etc.). Glob by default. |
-| `targetPatternsAreRegex` | `boolean` | Set `true` to treat `targetPatterns` as regex instead of glob. Default: `false`. |
-
-### Target Extraction
-
-The target matched against `targetPatterns` is extracted from tool parameters:
-
-| Tool | Target source |
-|------|---------------|
-| Read, Write, Edit, NotebookEdit | `file_path` param |
-| Glob, Grep | `path` or `pattern` param |
-| Bash | `command` param (truncated to 80 chars) |
-| WebFetch, WebSearch | `url` param |
-| Task, TodoWrite | no target extracted |
-
-### Glob Patterns
-
-Glob matching supports `*` (any characters except `/`), `**` (any characters including `/`), and `?` (single character). Special regex characters are escaped.
-
-Examples:
-- `**/.env*` matches `/project/.env`, `/project/.env.local`
-- `/src/*.ts` matches `/src/index.ts` but not `/src/sub/index.ts`
-- `/src/**/*.ts` matches any `.ts` file under `/src/` at any depth
-
-### Decisions
-
-| Decision | Behavior (enforce=true) | Behavior (enforce=false) |
-|----------|------------------------|--------------------------|
-| `allow` | Tool executes normally | Tool executes normally |
-| `deny` | Tool is **blocked**, returns `[blocked] [web4-policy] <reason>` | Logged as warning, tool executes |
-| `warn` | Tool executes, warning logged | Tool executes, warning logged |
-
-### Audit Integration
-
-Policy decisions are recorded in the R6 `rules.constraints` field:
-
-```json
-{
-  "rules": {
-    "auditLevel": "standard",
-    "constraints": ["policy:deny", "rule:deny-destructive-commands"]
-  }
-}
-```
-
-### Example: Full Policy Config
-
-```json
-{
-  "plugins": {
-    "web4-governance": {
-      "policy": {
-        "defaultPolicy": "allow",
-        "enforce": true,
-        "rules": [
-          {
-            "id": "deny-destructive-commands",
-            "name": "Block destructive shell commands",
-            "priority": 1,
-            "decision": "deny",
-            "reason": "Destructive command blocked",
-            "match": {
-              "tools": ["Bash"],
-              "targetPatterns": ["rm\\s+-rf", "mkfs\\."],
-              "targetPatternsAreRegex": true
-            }
-          },
-          {
-            "id": "deny-secrets",
-            "name": "Block reading secret files",
-            "priority": 5,
-            "decision": "deny",
-            "reason": "Secret file access denied",
-            "match": {
-              "categories": ["file_read"],
-              "targetPatterns": ["**/.env", "**/.env.*", "**/credentials.*", "**/*secret*"]
-            }
-          },
-          {
-            "id": "warn-network",
-            "name": "Warn on network access",
-            "priority": 10,
-            "decision": "warn",
-            "match": {
-              "categories": ["network"]
-            }
-          }
-        ]
-      }
+    "categories": ["file_read", "credential_access"],
+    "targetPatterns": ["**/.env", "**/.env.*", "**/credentials.*"],
+    "timeWindow": {
+      "allowedHours": [9, 17],
+      "allowedDays": [1, 2, 3, 4, 5],
+      "timezone": "America/New_York"
+    },
+    "rateLimit": {
+      "maxCount": 10,
+      "windowMs": 60000
     }
   }
 }
 ```
+
+### Match Criteria
+
+| Field            | Type       | Description                                                                                        |
+| ---------------- | ---------- | -------------------------------------------------------------------------------------------------- |
+| `tools`          | `string[]` | Tool names: `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `Task`, etc.              |
+| `categories`     | `string[]` | `file_read`, `file_write`, `credential_access`, `command`, `network`, `delegation`, `state`, `mcp` |
+| `targetPatterns` | `string[]` | Glob patterns (or regex if `targetPatternsAreRegex: true`)                                         |
+| `timeWindow`     | `object`   | Temporal constraint: `allowedHours`, `allowedDays`, `timezone`                                     |
+| `rateLimit`      | `object`   | Rate limit: `maxCount` actions per `windowMs` milliseconds                                         |
+
+### Tool Categories
+
+| Category            | Tools                     | Description                |
+| ------------------- | ------------------------- | -------------------------- |
+| `file_read`         | Read, Glob, Grep          | Reading file contents      |
+| `file_write`        | Write, Edit, NotebookEdit | Modifying files            |
+| `credential_access` | (auto-detected)           | Access to credential files |
+| `command`           | Bash                      | Shell command execution    |
+| `network`           | WebFetch, WebSearch       | Network requests           |
+| `delegation`        | Task                      | Spawning sub-agents        |
+| `state`             | TodoWrite                 | State modifications        |
 
 ## CLI Commands
 
 ### Audit Commands
 
 ```bash
-moltbot audit summary              # Show active session stats
-moltbot audit verify [sessionId]   # Verify chain integrity
-moltbot audit last [count]         # Show last N audit records (default: 10)
+moltbot audit summary                    # Session stats
+moltbot audit verify [sessionId]         # Verify chain + signatures
+moltbot audit last [count]               # Last N records
+moltbot audit query --tool Bash --since 1h  # Filter records
+moltbot audit report [--json]            # Aggregated report
 ```
-
-#### `audit summary`
-
-Displays all active governance sessions with action counts, audit record counts, chain validity, and tool/category breakdowns.
-
-#### `audit verify [sessionId]`
-
-Verifies the hash-linked audit chain integrity. Checks that each record's `prevRecordHash` matches the SHA-256 hash of the previous record. Pass a session ID to verify a specific chain, or omit for all active sessions.
-
-#### `audit last [count]`
-
-Shows the most recent audit records across all active sessions. Each record shows timestamp, tool name, target, and result status.
 
 ### Policy Commands
 
 ```bash
-moltbot policy status              # Show policy engine status
-moltbot policy rules               # List all rules in evaluation order
-moltbot policy test <tool> [target] # Dry-run a tool call against the policy
+moltbot policy status                    # Engine status
+moltbot policy rules                     # List rules in order
+moltbot policy test <tool> [target]      # Dry-run evaluation
+moltbot policy presets                   # List available presets
+moltbot policy entities                  # Show policy trust graph
 ```
 
-#### `policy status`
-
-Shows the current policy engine state:
-
-```
-Policy engine:
-  Rules:    3
-  Default:  allow
-  Enforce:  true
-```
-
-#### `policy rules`
-
-Lists all configured rules in priority order with match criteria:
-
-```
-3 rules (priority order):
-
-  [1] deny-destructive-commands -> deny
-       Block destructive shell commands
-       match: tools=[Bash] AND targets(regex)=[rm\s+-rf, mkfs\.]
-       reason: Destructive command blocked
-
-  [5] deny-secrets -> deny
-       Block reading secret files
-       match: categories=[file_read] AND targets(glob)=[**/.env, **/.env.*, **/credentials.*, **/*secret*]
-       reason: Secret file access denied
-
-  [10] warn-network -> warn
-       Warn on network access
-       match: categories=[network]
-
-Default: allow | Enforce: true
-```
-
-#### `policy test <tool> [target]`
-
-Dry-runs a tool call against the policy engine without executing anything. Shows what decision would be made:
+### Example: Test Policy
 
 ```bash
 $ moltbot policy test Bash "rm -rf /tmp"
@@ -267,77 +168,135 @@ Category:   command
 Target:     rm -rf /tmp
 Decision:   deny
 Enforced:   true
-Reason:     Destructive command blocked
+Reason:     Destructive command blocked by safety policy
 Rule:       deny-destructive-commands (priority 1)
-Constraints: policy:deny, rule:deny-destructive-commands
-```
-
-```bash
-$ moltbot policy test Read "/project/src/index.ts"
-Tool:       Read
-Category:   file_read
-Target:     /project/src/index.ts
-Decision:   allow
-Enforced:   true
-Reason:     Default policy: allow
-Constraints: policy:allow, rule:default
 ```
 
 ## Storage Layout
 
 ```
 ~/.moltbot/extensions/web4-governance/
-  audit/
-    <sessionId>.jsonl     # Hash-linked audit records (append-only)
-  sessions/
-    <sessionId>.json      # Session metadata (overwritten on each action)
+├── audit/
+│   └── <sessionId>.jsonl      # Signed, hash-linked audit records
+├── sessions/
+│   └── <sessionId>.json       # Session state + signing keys
+├── data/
+│   └── rate-limits.db         # SQLite persistent rate limits
+└── witnesses.jsonl            # Policy witnessing graph
 ```
 
 ## Architecture
 
-### Hooks
+### Hook Flow
 
-The plugin uses two hook surfaces:
+```
+Tool Call
+    │
+    ▼
+┌─────────────────────────────┐
+│ before_tool_call            │
+│ • Extract targets           │
+│ • Check credentials/memory  │  → Alert if sensitive
+│ • Evaluate policy rules     │  → Block if denied
+│ • Check time window         │
+│ • Check rate limit          │
+└─────────────────────────────┘
+    │
+    ▼ (if allowed)
+┌─────────────────────────────┐
+│ Tool Execution              │
+└─────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────┐
+│ after_tool_call             │
+│ • Create R6 record          │
+│ • Sign with Ed25519         │
+│ • Append to hash chain      │
+│ • Update rate limits        │
+│ • Witness policy decision   │
+└─────────────────────────────┘
+```
 
-- **`before_tool_call`** (sequential): Evaluates policy rules. Can block tool execution by returning `{ block: true, blockReason }`. Stashes the policy evaluation for the after-hook.
-- **`after_tool_call`** (fire-and-forget): Creates the R6 audit record, writes policy constraints from the stashed evaluation, and appends to the hash-linked chain.
+### R6 Record Structure
 
-Internal hooks handle session lifecycle (bootstrap, start, end) and command-level auditing.
+| Field         | Content                                           |
+| ------------- | ------------------------------------------------- |
+| **Rules**     | Audit level, policy constraints, policy entity ID |
+| **Role**      | Session ID, agent ID, action index                |
+| **Request**   | Tool name, category, target(s), input hash        |
+| **Reference** | Previous R6 ID, chain position                    |
+| **Resource**  | Approval flags                                    |
+| **Result**    | Status, output hash, duration, error              |
+| **Signature** | Ed25519 signature + key ID                        |
 
-### R6 Request Structure
+### Signature Verification
 
-Each tool call produces an R6 record with six fields:
+Each session generates a unique Ed25519 keypair. Records are signed before the signature field is added, ensuring the signature covers all content. Verify with:
 
-| Field | Content |
-|-------|---------|
-| **Rules** | Audit level + policy constraints |
-| **Role** | Session ID, agent ID, action index, binding type |
-| **Request** | Tool name, category, target, input hash |
-| **Reference** | Session ID, previous R6 ID, chain position |
-| **Resource** | Approval requirement flag |
-| **Result** | Status (success/error/blocked), output hash, duration |
+```bash
+moltbot audit verify <sessionId>
+# Output: Chain valid: true, Signatures: 42 signed, 42 verified, 0 invalid
+```
 
-### Session Identity
+## Security Considerations
 
-Each session gets a Soft LCT (software-bound Linked Context Token) derived from `hostname:username`. Format: `web4:session:<machineHash>:<sessionId>`. This is the upgrade path to hardware-bound identity in Tier 2.
+### What This Protects Against
 
-## Implementation Tiers
+- **Credential exfiltration**: Detects and alerts on access to secret files
+- **Memory poisoning**: Warns when agents write to their own memory files
+- **Destructive commands**: Blocks `rm -rf`, `mkfs.*`, system modifications
+- **Audit tampering**: Hash chain + signatures make tampering detectable
+- **Rate limit bypass**: SQLite persistence survives restarts
 
-| Tier | Scope | Status |
-|------|-------|--------|
-| 1 - Observational | R6 audit, hash chain, soft LCT, tool classification | Done |
-| 1.5 - Policy | Configurable rules, before_tool_call gating, allow/deny/warn | Done |
-| 2 - Authorization | T3 trust tensors, ATP economics, hardware LCT, full policy engine | Planned (Hardbound) |
+### What This Does NOT Protect Against
+
+- **Root access**: If attacker has root, they can modify anything
+- **Key theft**: Private signing keys are stored in session state files
+- **Determined insider**: Someone with file access could delete audit files
+- **Real-time exfiltration**: Detection is logging, not prevention (for credentials)
+
+### Recommended Deployment
+
+1. Use `safety` or `strict` preset
+2. Set `enforce: true` in production
+3. Monitor `[web4-alert]` log messages
+4. Periodically run `moltbot audit verify` to check chain integrity
+5. Back up audit files to immutable storage for forensics
 
 ## Development
 
 ```bash
-# Run plugin tests
-npx vitest run extensions/web4-governance/
+# Run tests
+pnpm test extensions/web4-governance/
 
-# Type-check
+# Type check
 pnpm build
 
-# Full test suite
-pnpm test
+# Test policy manually
+moltbot policy test Bash "cat /etc/passwd"
+moltbot policy test Read ".env"
 ```
+
+## Implementation Status
+
+| Phase | Feature                       | Status  |
+| ----- | ----------------------------- | ------- |
+| 1     | R6 audit chain, hash linking  | Done    |
+| 1     | Session identity (Soft LCT)   | Done    |
+| 1     | Policy engine with presets    | Done    |
+| 1     | Credential access alerting    | Done    |
+| 1     | Memory protection rules       | Done    |
+| 1     | ReDoS pattern validation      | Done    |
+| 2     | Ed25519 audit signatures      | Done    |
+| 2     | SQLite persistent rate limits | Done    |
+| 3     | Multi-target extraction       | Done    |
+| 3     | Policy witnessing persistence | Done    |
+| 3     | Temporal constraints          | Done    |
+| —     | Hardware-bound LCT (Tier 2)   | Planned |
+| —     | T3 trust tensors              | Planned |
+| —     | ATP economics                 | Planned |
+
+## License
+
+Part of the moltbot project. See repository root for license.

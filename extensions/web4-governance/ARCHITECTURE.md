@@ -1,134 +1,308 @@
-# Web4 Governance Plugin — Architecture & Cross-Project Context
+# Web4 Governance Plugin — Architecture
 
-## What This Is
-
-The `web4-governance` plugin is a **Tier 1 (Observational)** implementation of the
-Web4 R6 framework, running inside the moltbot agent runtime. It creates verifiable
-audit trails for every tool call an agent makes, without blocking or requiring
-approval.
-
-This is the first live integration of Web4 governance into an agent runtime that
-actually executes tools — not a simulation or demo.
-
-## Where It Sits in the Web4 Stack
+## System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   Hardbound (Tier 2)                        │
-│   Full Policy │ Trust Tensors │ ATP │ Hardware Binding       │
-│   hardbound-core/src/policy.rs                              │
-│   hardbound/src/policy.ts                                   │
-└───────────────────────────┬─────────────────────────────────┘
-                            │ upgrade path
-┌───────────────────────────┴─────────────────────────────────┐
-│          web4-governance (Tier 1 + 1.5) ← YOU ARE HERE      │
-│   R6 Audit │ Soft LCT │ Hash Chain │ Policy Engine │ CLI    │
-│   moltbot/extensions/web4-governance/                       │
-└───────────────────────────┬─────────────────────────────────┘
-                            │ hooks into
-┌───────────────────────────┴─────────────────────────────────┐
-│                  Moltbot Agent Runtime                       │
-│   pi-tools.hooks.ts (before_tool_call / after_tool_call)    │
-│   moltbot/src/agents/pi-tools.ts                            │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        web4-governance                               │
+│                                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
+│  │   Policy     │  │   Audit      │  │   Session    │              │
+│  │   Engine     │  │   Chain      │  │   Store      │              │
+│  │              │  │              │  │              │              │
+│  │ • Rules      │  │ • R6 Records │  │ • LCT Token  │              │
+│  │ • Presets    │  │ • Hash Links │  │ • Counters   │              │
+│  │ • Time/Rate  │  │ • Signatures │  │ • Sign Keys  │              │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘              │
+│         │                 │                 │                       │
+│  ┌──────┴─────────────────┴─────────────────┴───────┐              │
+│  │                   index.ts                        │              │
+│  │  before_tool_call → Policy Check → Block/Allow   │              │
+│  │  after_tool_call  → R6 Record → Sign → Persist   │              │
+│  └──────────────────────────────────────────────────┘              │
+│                              │                                      │
+└──────────────────────────────┼──────────────────────────────────────┘
+                               │ hooks
+┌──────────────────────────────┼──────────────────────────────────────┐
+│                    Moltbot Agent Runtime                            │
+│              pi-tools.hooks.ts (tool execution)                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### R6 Implementation Tiers (from web4-standard/core-spec/r6-implementation-guide.md)
+## Component Details
 
-| Tier | Project | R6 Scope | Trust Model | Enforcement |
-|------|---------|----------|-------------|-------------|
-| **1 — Observational** | web4-governance (this plugin) | Lite: audit_level, session token, tool/category/target/hash, chain position | None (relying party decides) | Record-only |
-| **1.5 — Policy** | web4-governance (this plugin) | Lite + configurable policy rules, allow/deny/warn, glob/regex matching | Rule-based (first-match-wins) | Block or warn (with dry-run mode) |
-| **2 — Authorization** | hardbound-core (Rust) | Full: policy rules, actor LCT, team context, ATP, trust delta | T3 tensor (competence, reliability, integrity) | Approve/Reject/Escalate |
-| **3 — Training** | HRM/SAGE | Training: exercise type, mode detection, meta-cognitive | T3 with developmental trajectory | Include/Exclude/Review |
+### Policy Engine (`src/policy.ts`, `src/policy-types.ts`)
 
-## What Was Built (PRs #1 and #2)
+Evaluates tool calls against configurable rules before execution.
 
-### PR #1: Tool Call Hooks (`src/agents/pi-tools.hooks.ts`)
-- Wired `before_tool_call` / `after_tool_call` typed plugin hooks into moltbot's tool execution pipeline
-- `before_tool_call` can modify params or block execution (returns `{ block: true, blockReason }`)
-- `after_tool_call` fires post-execution with result, error, and duration (fire-and-forget)
-- This is the hook surface that enables both observation (Tier 1) and enforcement (Tier 2)
+```typescript
+interface PolicyRule {
+  id: string;
+  name: string;
+  priority: number; // Lower = evaluated first
+  decision: "allow" | "deny" | "warn";
+  reason?: string;
+  match: PolicyMatch;
+}
 
-### PR #2: Web4 Governance Plugin (`extensions/web4-governance/`)
-- **R6 framework** (`src/r6.ts`): Creates structured R6 requests from tool calls. Classifies tools into categories (file_read, file_write, command, network, delegation, state). Hashes inputs and extracts targets.
-- **Audit chain** (`src/audit.ts`): Hash-linked JSONL append log. Each record's `prevRecordHash` is the SHA-256 prefix of the previous line. Verifiable integrity.
-- **Session state** (`src/session-state.ts`): Tracks action index, tool/category counts, last R6 ID per session.
-- **Soft LCT** (`src/soft-lct.ts`): Software-bound identity token from `hostname:username` hash. Not hardware-bound — that's the Hardbound upgrade path.
+interface PolicyMatch {
+  tools?: string[]; // Tool name filter
+  categories?: string[]; // Category filter
+  targetPatterns?: string[]; // Glob/regex patterns
+  targetPatternsAreRegex?: boolean;
+  rateLimit?: RateLimitSpec;
+  timeWindow?: TimeWindow;
+}
+```
 
-## Relationship to Hardbound
+**Evaluation flow:**
 
-### What's shared (protocol-compatible)
-- R6 request structure (Tier 1 is a subset of Tier 2)
-- Audit record format (Tier 1 records can be imported into Tier 2)
-- Tool categories map to Hardbound `ActionType` enum
-- Hash-linked provenance chain
-- Session identity concept (Soft LCT → Hardware LCT upgrade path)
+1. Sort rules by priority (ascending)
+2. For each rule, check all match criteria (AND logic)
+3. First matching rule determines decision
+4. If no match, use `defaultPolicy`
 
-### What Hardbound adds (Tier 2, proprietary)
-- **PolicyEngine** (`policy.rs`): Evaluates R6 requests against rules, roles, trust thresholds, ATP balance. Returns Approve/Reject/Escalate/AutoApprove.
-- **T3 Trust Tensors**: competence, reliability, integrity scoring with context weights
-- **Coherence Metrics**: score + delta tracking with attestation
-- **ATP Economics**: Resource allocation, daily limits, transfer caps
-- **Hardware Binding**: TPM/SE-based LCT (P0 blocker, not yet implemented)
-- **Governance Rules**: Role-based (developer, lead, admin, viewer, guest), action-type scoped, with prohibited requirements and auto-approve thresholds
+### Policy Presets (`src/presets.ts`)
 
-### The upgrade path
-The R6 implementation guide documents a progressive adoption model:
-1. **Start**: Install web4-governance plugin (observational audit trail)
-2. **Grow**: Add policy evaluation in `before_tool_call` (this is the next step)
-3. **Extend**: Connect to Hardbound for full T3/ATP/hardware-bound governance
+Pre-configured rule sets for common use cases:
 
-## Tier 1.5: Policy Engine (Implemented)
+| Preset       | Purpose                                |
+| ------------ | -------------------------------------- |
+| `permissive` | Audit only, no blocking                |
+| `safety`     | Block dangerous ops, warn on sensitive |
+| `strict`     | Default deny, explicit allowlist       |
+| `audit-only` | Record everything, dry-run mode        |
 
-The policy engine uses the `before_tool_call` hook to evaluate configurable rules
-before each tool call. Rules match by tool name, category, and target pattern
-(glob or regex). Decisions are allow, deny, or warn. Deny decisions block tool
-execution when `enforce: true`; in dry-run mode (`enforce: false`), denials are
-logged but not enforced.
+### Audit Chain (`src/audit.ts`)
 
-### What was built
-- **Policy types** (`src/policy-types.ts`): `PolicyRule`, `PolicyMatch`, `PolicyConfig`, `PolicyEvaluation`, `PolicyDecision`
-- **Matchers** (`src/matchers.ts`): Glob-to-regex conversion, list matching, target pattern matching, composite AND-logic rule matching
-- **PolicyEngine** (`src/policy.ts`): Loads rules, sorts by priority (ascending), first-match-wins evaluation, `shouldBlock()` for enforcement
-- **Integration** (`index.ts`): `before_tool_call` hook evaluates policy and blocks if deny + enforce; `after_tool_call` picks up stashed evaluation and writes constraints to R6 `rules.constraints`
-- **CLI** (`index.ts`): `moltbot policy status`, `moltbot policy rules`, `moltbot policy test <tool> [target]`
+Hash-linked append-only log with Ed25519 signatures.
 
-### Deferred to Phase 2
-- Rate limiting (needs windowed counters in session state)
-- Config hot-reload
-- T3/ATP integration (that's Tier 2 / Hardbound)
+```typescript
+interface AuditRecord {
+  recordId: string;
+  r6RequestId: string;
+  timestamp: string;
+  tool: string;
+  category: string;
+  target?: string;
+  targets?: string[]; // Multi-file operations
+  result: {
+    status: "success" | "error" | "blocked";
+    outputHash?: string;
+    errorMessage?: string;
+    durationMs?: number;
+  };
+  provenance: {
+    sessionId: string;
+    actionIndex: number;
+    prevRecordHash: string; // SHA-256 of previous line
+  };
+  signature?: string; // Ed25519 signature (hex)
+  signingKeyId?: string; // Key identifier
+}
+```
 
-### What this enables for Hardbound
-The upgrade to Tier 2 is:
-- Replace rule evaluation with PolicyEngine from hardbound-core
-- Add T3 tensor snapshots to audit records
-- Add coherence metrics
-- Replace Soft LCT with hardware-bound LCT
-- Add ATP tracking
+**Integrity guarantees:**
 
-The plugin interface stays the same — just the policy evaluation gets richer.
+- Each record includes hash of previous record
+- Genesis record has `prevRecordHash: "genesis"`
+- Ed25519 signature covers record content (excluding signature fields)
+- Tampering breaks hash chain OR invalidates signatures
 
-## Storage Layout
+### Signing (`src/signing.ts`)
+
+Ed25519 cryptographic signatures for audit records.
+
+```typescript
+// Key generation (per session)
+const { privateKeyHex, publicKeyHex, keyId } = generateSigningKeyPair();
+
+// Signing (before writing to chain)
+const signature = signData(JSON.stringify(record), privateKeyHex);
+
+// Verification (during audit verify)
+const valid = verifySignature(recordData, signature, publicKeyHex);
+```
+
+Keys are stored in session state and used for all records in that session.
+
+### Rate Limiter (`src/rate-limiter.ts`, `src/persistent-rate-limiter.ts`)
+
+Sliding window counters for rate-based rules.
+
+**Memory-only (`RateLimiter`):**
+
+- Fast, no I/O
+- Resets on restart
+
+**Persistent (`PersistentRateLimiter`):**
+
+- SQLite WAL mode
+- Survives restarts
+- Graceful fallback if SQLite unavailable
+
+### Session State (`src/session-state.ts`)
+
+Per-session metadata:
+
+```typescript
+interface SessionState {
+  sessionId: string;
+  lct: SoftLCTToken; // Session identity
+  actionIndex: number; // Auto-incrementing counter
+  lastR6Id?: string;
+  startedAt: string;
+  toolCounts: Record<string, number>;
+  categoryCounts: Record<string, number>;
+  policyEntityId?: string;
+  signingPrivateKeyHex?: string;
+  signingPublicKeyHex?: string;
+  signingKeyId?: string;
+}
+```
+
+### R6 Framework (`src/r6.ts`)
+
+Structured request format for tool calls:
+
+```
+R6 = Rules + Role + Request + Reference + Resource → Result
+```
+
+**Target extraction:**
+
+- `extractTarget()`: Primary target (file path, command, URL)
+- `extractTargets()`: All targets (multi-file ops, bash commands)
+- `isCredentialTarget()`: Detects `.env`, credentials, API keys
+- `isMemoryTarget()`: Detects agent memory files
+
+### Policy Entity (`src/policy-entity.ts`)
+
+Policies as first-class trust network participants.
+
+```typescript
+interface PolicyEntity {
+  entityId: PolicyEntityId; // policy:<name>:<version>:<hash>
+  contentHash: string; // SHA-256 of config
+  config: PolicyConfig;
+}
+```
+
+**Witnessing:**
+
+- Sessions witness operating under a policy
+- Policies witness session decisions
+- Relationships persisted to `witnesses.jsonl`
+
+### Matchers (`src/matchers.ts`)
+
+Pattern matching utilities:
+
+- `globToRegex()`: Convert glob to regex
+- `matchesRule()`: Check tool call against rule criteria
+- `matchesTimeWindow()`: Check temporal constraints
+- `validateRegexPattern()`: ReDoS protection
+
+## Data Flow
+
+### before_tool_call
+
+```
+1. Extract target from params
+2. Extract all targets (multi-file detection)
+3. Check credential patterns → Alert if match
+4. Check memory patterns → Alert if write
+5. If policy engine has rules:
+   a. Classify tool (may upgrade to credential_access)
+   b. Evaluate rules in priority order
+   c. Check time window constraints
+   d. Check rate limits
+   e. Return block/allow decision
+```
+
+### after_tool_call
+
+```
+1. Get session state (create if needed)
+2. Create R6 request with targets
+3. Add policy constraints from stashed evaluation
+4. Build audit record
+5. Sign record with session key
+6. Append to hash chain
+7. Update session counters
+8. Record rate limit action
+9. Persist witnessing relationship
+```
+
+## Storage
 
 ```
 ~/.moltbot/extensions/web4-governance/
 ├── audit/
-│   └── <sessionId>.jsonl     # Hash-linked audit records (append-only)
-└── sessions/
-    └── <sessionId>.json      # Session metadata (overwritten on each action)
+│   └── {sessionId}.jsonl     # Audit records (append-only)
+├── sessions/
+│   └── {sessionId}.json      # Session state (overwritten)
+├── data/
+│   └── rate-limits.db        # SQLite (WAL mode)
+└── witnesses.jsonl           # Witnessing graph (append-only)
 ```
 
-## Cross-Project References
+## Security Model
 
-| File | Project | Relevance |
-|------|---------|-----------|
-| `web4-standard/core-spec/r6-implementation-guide.md` | web4 | Tier definitions, ID formats, upgrade path |
-| `web4-standard/core-spec/r6-security-analysis.md` | web4 | Attack vectors and mitigations |
-| `hardbound-core/src/policy.rs` | hardbound | Full policy engine (Rust) |
-| `hardbound/src/policy.ts` | hardbound | TypeScript policy with rule builder |
-| `hardbound/tests/policy.test.ts` | hardbound | Policy test patterns |
-| `hardbound-core/src/r6.rs` | hardbound | Full R6 request (Rust) |
-| `hardbound/MVP_IMPLEMENTATION.md` | hardbound | MVP status, bundle schema, lessons |
-| `src/agents/pi-tools.hooks.ts` | moltbot | Hook wrapper (our PR #1) |
-| `src/plugins/hooks.ts` | moltbot | Hook runner (runBeforeToolCall/runAfterToolCall) |
+### Threat Model
+
+| Threat            | Mitigation                            |
+| ----------------- | ------------------------------------- |
+| Audit tampering   | Hash chain + signatures               |
+| Replay attacks    | Session-scoped keys, action index     |
+| Credential theft  | Detection + alerting (not prevention) |
+| Memory poisoning  | Warn/block on memory file writes      |
+| Rate limit bypass | SQLite persistence                    |
+| ReDoS attacks     | Pattern validation at rule load       |
+
+### Trust Boundaries
+
+1. **Trusted**: Plugin code, moltbot runtime
+2. **Semi-trusted**: Policy configuration (validated)
+3. **Untrusted**: Tool parameters, external input
+
+### Key Management
+
+- Each session generates unique Ed25519 keypair
+- Private key stored in session state (file-system protected)
+- Public key used for verification
+- No key rotation (session-scoped)
+
+## Extension Points
+
+### Adding New Tool Categories
+
+1. Update `TOOL_CATEGORIES` in `src/r6.ts`
+2. Add detection patterns if needed
+3. Update category documentation
+
+### Adding New Presets
+
+1. Add rule array in `src/presets.ts`
+2. Register in `PRESETS` map
+3. Document in README
+
+### Custom Rate Limit Keys
+
+Rate limit keys are built from rule context:
+
+- Tool-specific: `ratelimit:{ruleId}:tool:{toolName}`
+- Category-specific: `ratelimit:{ruleId}:category:{category}`
+- Global: `ratelimit:{ruleId}:global`
+
+## Upgrade Path to Tier 2 (Hardbound)
+
+| Component | Tier 1 (Current)    | Tier 2 (Hardbound)    |
+| --------- | ------------------- | --------------------- |
+| Identity  | Soft LCT (software) | Hardware LCT (TPM/SE) |
+| Policy    | Rule-based          | T3 trust tensors      |
+| Economics | None                | ATP allocation        |
+| Signing   | Ed25519 (software)  | Hardware-backed       |
+| Storage   | Local files         | Distributed ledger    |
+
+The plugin interface remains compatible — policy evaluation becomes richer.
