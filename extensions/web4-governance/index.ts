@@ -26,6 +26,7 @@ import {
   createR6ModelRequest,
 } from "./src/policy-model.js";
 import type { PolicyModelDecision, PolicyModelReview } from "./src/policy-model-types.js";
+import { HardboundClient, type HardboundEvaluateRequest } from "./src/hardbound-client.js";
 
 type PolicyModelConfig = {
   /** Path to GGUF model file (e.g., phi-4-mini-Q4_K_M.gguf) */
@@ -40,10 +41,23 @@ type PolicyModelConfig = {
   useGpu?: boolean;
 };
 
+type HardboundServerConfig = {
+  /** Base URL for the Hardbound PolicyService server */
+  url?: string;
+  /** Enable server-side evaluation (default: true) */
+  enabled?: boolean;
+  /** Request timeout in ms (default: 3000) */
+  timeoutMs?: number;
+  /** Heartbeat interval in ms (default: 30000, 0 to disable) */
+  heartbeatIntervalMs?: number;
+};
+
 type PluginConfig = {
   auditLevel?: string;
   showR6Status?: boolean;
   storagePath?: string;
+  /** Hardbound PolicyService server configuration */
+  hardboundServer?: HardboundServerConfig;
   policy?: Partial<PolicyConfig> & { preset?: string };
   /** Policy Model configuration for semantic policy evaluation */
   policyModel?: PolicyModelConfig;
@@ -60,6 +74,15 @@ const plugin = {
       auditLevel: { type: "string", enum: ["minimal", "standard", "verbose"], default: "standard" },
       showR6Status: { type: "boolean", default: true },
       storagePath: { type: "string" },
+      hardboundServer: {
+        type: "object",
+        properties: {
+          url: { type: "string", default: "http://localhost:9400" },
+          enabled: { type: "boolean", default: true },
+          timeoutMs: { type: "number", default: 3000 },
+          heartbeatIntervalMs: { type: "number", default: 30000 },
+        },
+      },
     },
   },
 
@@ -140,6 +163,51 @@ const plugin = {
         policyModel.init(policyEngine).catch(() => {});
         logger.info("[web4] Policy Model: heuristic-only mode");
       }
+    }
+
+    // --- Hardbound PolicyService Client ---
+    let hardboundClient: HardboundClient | null = null;
+    // Stash server request_ids so after_tool_call can report outcomes
+    const hardboundRequestStash = new Map<string, string>();
+
+    const hardboundServerUrl =
+      config.hardboundServer?.url ??
+      process.env.HARDBOUND_SERVER_URL ??
+      undefined;
+    const hardboundEnabled = config.hardboundServer?.enabled !== false;
+
+    if (hardboundServerUrl && hardboundEnabled) {
+      hardboundClient = new HardboundClient({
+        serverUrl: hardboundServerUrl,
+        timeoutMs: config.hardboundServer?.timeoutMs ?? 3000,
+        pluginName: "web4-governance",
+        pluginVersion: "2026.1.27-beta.1",
+      });
+
+      // Register asynchronously — don't block plugin startup
+      hardboundClient
+        .register()
+        .then((ok) => {
+          if (ok) {
+            logger.info(
+              `[web4] Hardbound server connected: ${hardboundServerUrl} (plugin_id: ${hardboundClient!.pluginId}, trust_ceiling: ${hardboundClient!.trustCeiling})`,
+            );
+            // Start heartbeat
+            const hbInterval = config.hardboundServer?.heartbeatIntervalMs ?? 30_000;
+            if (hbInterval > 0) {
+              hardboundClient!.startHeartbeat(hbInterval);
+            }
+          } else {
+            logger.warn(
+              `[web4] Hardbound server unreachable at ${hardboundServerUrl} — using local evaluation`,
+            );
+          }
+        })
+        .catch((err) => {
+          logger.warn(
+            `[web4] Hardbound server registration failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
     }
 
     // Stash for passing policy evaluations from before_tool_call to after_tool_call
@@ -285,7 +353,106 @@ const plugin = {
       // Ensure session exists for this tool call (P0 fix: consistent key derivation)
       const entry = getOrCreateSession(sid);
 
-      // --- Phase 1: Heuristic Policy Evaluation ---
+      // --- Phase 0: Server-Side Policy Evaluation (Hardbound) ---
+      if (hardboundClient?.serverReachable) {
+        try {
+          const evalReq: HardboundEvaluateRequest = {
+            actor_lct: entry.state.lct.tokenId,
+            action_type: event.toolName,
+            target: target ?? "(no target)",
+            parameters: event.params as Record<string, unknown>,
+            role_context: {
+              session_id: entry.state.sessionId,
+              agent_id: ctx.agentId,
+              action_index: entry.state.actionIndex,
+            },
+          };
+
+          const serverResp = await hardboundClient.evaluate(evalReq);
+
+          if (serverResp) {
+            // Stash request_id for outcome reporting in after_tool_call
+            hardboundRequestStash.set(sid, serverResp.request_id);
+
+            // Map server decision to local format
+            const serverDecision = serverResp.decision; // approve | deny | escalate
+
+            if (serverDecision === "deny") {
+              logger.warn(
+                `[web4] Hardbound DENY: ${event.toolName} [${category}] → ${target ?? "(no target)"} — ${serverResp.reason}`,
+              );
+
+              // Record in audit
+              const r6 = createR6Request(
+                entry.state.sessionId,
+                ctx.agentId,
+                event.toolName,
+                event.params,
+                entry.state.actionIndex,
+                entry.state.lastR6Id,
+                auditLevel,
+                entry.state.policyEntityId,
+              );
+              r6.rules.constraints = [
+                ...serverResp.constraints,
+                "source:hardbound-server",
+                `hardbound:request:${serverResp.request_id}`,
+              ];
+              const result = {
+                status: "blocked" as const,
+                errorMessage: `[hardbound] ${serverResp.reason}`,
+              };
+              r6.result = result;
+              entry.audit.record(r6, result);
+              sessionStore.incrementAction(entry.state, event.toolName, category, r6.id);
+
+              return { block: true, blockReason: `[web4-hardbound] ${serverResp.reason}` };
+            }
+
+            if (serverDecision === "escalate") {
+              // Escalate = log warning, continue to local evaluation for final decision
+              logger.info(
+                `[web4] Hardbound ESCALATE: ${event.toolName} → ${target ?? "(no target)"} — ${serverResp.reason} (falling through to local evaluation)`,
+              );
+              // Don't return — let local evaluation decide
+            }
+
+            if (serverDecision === "approve") {
+              // Server approved — stash a synthetic evaluation and skip local checks
+              const serverEval: PolicyEvaluation = {
+                decision: "allow",
+                enforced: true,
+                reason: `Hardbound server approved: ${serverResp.reason}`,
+                constraints: [
+                  ...serverResp.constraints,
+                  "source:hardbound-server",
+                  `hardbound:request:${serverResp.request_id}`,
+                ],
+              };
+              policyStash.set(sid, serverEval);
+
+              if (auditLevel === "verbose") {
+                logger.info(
+                  `[web4] Hardbound APPROVE: ${event.toolName} [${category}] → ${target ?? "(no target)"}`,
+                );
+              }
+
+              // Skip local evaluation — server has the authority
+              return;
+            }
+          }
+          // serverResp is null = server unreachable, fall through to local
+        } catch (err) {
+          if (auditLevel === "verbose") {
+            logger.warn(
+              `[web4] Hardbound evaluate error: ${err instanceof Error ? err.message : String(err)} — falling back to local`,
+            );
+          }
+          // Fall through to local evaluation
+        }
+      }
+
+      // --- Phase 1: Heuristic Policy Evaluation (local fallback) ---
       if (policyEngine.ruleCount > 0) {
         const { blocked, evaluation } = policyEngine.shouldBlock(event.toolName, category, target);
 
@@ -475,6 +642,18 @@ const plugin = {
         }
       }
 
+      // --- Report outcome to Hardbound server ---
+      const hardboundRequestId = hardboundRequestStash.get(sid);
+      if (hardboundRequestId && hardboundClient) {
+        hardboundRequestStash.delete(sid);
+        // Fire-and-forget: don't await, don't block
+        void hardboundClient.reportOutcome({
+          request_id: hardboundRequestId,
+          success: !event.error,
+          result_hash: result.outputHash,
+        });
+      }
+
       if (auditLevel === "verbose") {
         logger.info(
           `[web4] R6 ${r6.id}: ${event.toolName} [${classifyTool(event.toolName)}] (${event.durationMs ?? 0}ms)`,
@@ -628,6 +807,22 @@ const plugin = {
             logger.info(`  Enforce:  ${policyEngine.isEnforcing}`);
             if (config.policy?.preset) {
               logger.info(`  Preset:   ${config.policy.preset}`);
+            }
+            logger.info("");
+            logger.info("Hardbound server:");
+            if (hardboundClient) {
+              logger.info(`  URL:       ${hardboundServerUrl}`);
+              logger.info(`  Reachable: ${hardboundClient.serverReachable}`);
+              logger.info(`  Plugin ID: ${hardboundClient.pluginId ?? "(not registered)"}`);
+              logger.info(`  LCT ID:   ${hardboundClient.lctId ?? "(none)"}`);
+              logger.info(`  Ceiling:   ${hardboundClient.trustCeiling ?? "(none)"}`);
+              if (hardboundClient.lastContactMs > 0) {
+                const ago = Math.round((Date.now() - hardboundClient.lastContactMs) / 1000);
+                logger.info(`  Last seen: ${ago}s ago`);
+              }
+            } else {
+              logger.info("  Status: not configured");
+              logger.info("  Set hardboundServer.url or HARDBOUND_SERVER_URL to enable");
             }
           });
 
@@ -846,7 +1041,8 @@ const plugin = {
     );
 
     const modelStatus = policyModel ? (policyModel.isModelReady() ? "ready" : "heuristic") : "none";
-    logger.info(`[web4] Web4 Governance plugin loaded (audit: ${auditLevel}, model: ${modelStatus})`);
+    const hardboundStatus = hardboundClient ? `connecting:${hardboundServerUrl}` : "local-only";
+    logger.info(`[web4] Web4 Governance plugin loaded (audit: ${auditLevel}, model: ${modelStatus}, server: ${hardboundStatus})`);
   },
 };
 

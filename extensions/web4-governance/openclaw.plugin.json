@@ -17,6 +17,32 @@
         "type": "string",
         "description": "Override default ~/.web4/ storage path"
       },
+      "hardboundServer": {
+        "type": "object",
+        "description": "Hardbound PolicyService server configuration. When configured, the plugin evaluates policies server-side first and falls back to local evaluation on connection failure.",
+        "properties": {
+          "url": {
+            "type": "string",
+            "default": "http://localhost:9400",
+            "description": "Base URL for the Hardbound PolicyService server"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable server-side policy evaluation (can also be set via HARDBOUND_SERVER_URL env var)"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "default": 3000,
+            "description": "Request timeout in milliseconds for server calls"
+          },
+          "heartbeatIntervalMs": {
+            "type": "number",
+            "default": 30000,
+            "description": "Heartbeat interval in milliseconds (0 to disable)"
+          }
+        }
+      },
       "policy": {
         "type": "object",
         "description": "Policy engine configuration for pre-action gating",

@@ -54,6 +54,69 @@ All fields are optional. Defaults shown below.
 | `storagePath`  | `string`                               | `~/.moltbot/extensions/web4-governance/` | Directory for audit logs and session state.                          |
 | `policy`       | `object`                               | see below                                | Policy engine configuration.                                         |
 
+## Hardbound Server Integration
+
+The plugin supports server-side policy evaluation via the Hardbound PolicyService. When configured, the evaluation pipeline is:
+
+1. **Hardbound server** (primary) — signed, server-side policy decisions
+2. **Local PolicyEngine** (fallback) — heuristic rule matching
+3. **Local PolicyModel** (fallback) — semantic evaluation via local LLM
+
+If the server is unreachable, the plugin falls back transparently to local evaluation. The server is an enhancement, not a requirement.
+
+### Configuration
+
+```json
+{
+  "plugins": {
+    "web4-governance": {
+      "hardboundServer": {
+        "url": "http://localhost:9400",
+        "enabled": true,
+        "timeoutMs": 3000,
+        "heartbeatIntervalMs": 30000
+      }
+    }
+  }
+}
+```
+
+Alternatively, set the `HARDBOUND_SERVER_URL` environment variable (the config file takes precedence).
+
+| Field                | Type      | Default                  | Description                                      |
+| -------------------- | --------- | ------------------------ | ------------------------------------------------ |
+| `url`                | `string`  | `http://localhost:9400`  | Base URL for the Hardbound PolicyService server   |
+| `enabled`            | `boolean` | `true`                   | Enable server-side evaluation                     |
+| `timeoutMs`          | `number`  | `3000`                   | Request timeout in milliseconds                   |
+| `heartbeatIntervalMs`| `number`  | `30000`                  | Heartbeat interval (0 to disable)                 |
+
+### Server API
+
+The plugin communicates with four endpoints:
+
+| Method | Endpoint                     | Purpose                                |
+| ------ | ---------------------------- | -------------------------------------- |
+| POST   | `/api/v1/plugin/register`    | Register plugin, get trust ceiling     |
+| POST   | `/api/v1/plugin/heartbeat`   | Keep-alive for registered plugins      |
+| POST   | `/api/v1/policy/evaluate`    | Get signed policy decision for action  |
+| POST   | `/api/v1/policy/outcome`     | Report action outcome (success/error)  |
+
+### Decision Mapping
+
+Server decisions map to Moltbot's `{block, blockReason}` format:
+
+| Server Decision | Plugin Behavior                                     |
+| --------------- | --------------------------------------------------- |
+| `approve`       | Allow tool execution, skip local evaluation          |
+| `deny`          | Block tool execution with reason                     |
+| `escalate`      | Log warning, fall through to local evaluation        |
+
+### CLI
+
+```bash
+moltbot policy status   # Shows Hardbound server connection status
+```
+
 ## Policy Engine
 
 The policy engine evaluates every tool call against a configurable set of rules before execution. Rules are matched in priority order (ascending); first match wins.
@@ -331,6 +394,7 @@ Each session gets a Soft LCT (software-bound Linked Context Token) derived from 
 | ----------------- | ----------------------------------------------------------------- | ------------------- |
 | 1 - Observational | R6 audit, hash chain, soft LCT, tool classification               | Done                |
 | 1.5 - Policy      | Configurable rules, before_tool_call gating, allow/deny/warn      | Done                |
+| 1.7 - Server      | Hardbound PolicyService integration, signed decisions, fallback   | Done                |
 | 2 - Authorization | T3 trust tensors, ATP economics, hardware LCT, full policy engine | Planned (Hardbound) |
 
 ## Development
